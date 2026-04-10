@@ -6,15 +6,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// clé Hugging Face (Render Environment Variables)
+// clé Hugging Face (dans Render Environment Variables)
 const HF_TOKEN = process.env.HF_TOKEN;
 
-// test route
+// route test
 app.get("/", (req, res) => {
   res.send("Serveur IA OK 🚀");
 });
 
-// CHAT ROUTE
+// route chat
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
 
@@ -22,7 +22,9 @@ app.post("/chat", async (req, res) => {
     return res.json({
       choices: [
         {
-          message: { content: "Aucun message reçu" }
+          message: {
+            content: "Aucun message reçu"
+          }
         }
       ]
     });
@@ -38,7 +40,7 @@ app.post("/chat", async (req, res) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "mistralai/Mistral-7B-Instruct-v0.2",
+          model: "mistralai/Mistral-7B-Instruct",
           messages: messages,
           temperature: 0.7,
           max_tokens: 300
@@ -52,6 +54,7 @@ app.post("/chat", async (req, res) => {
 
     const reply =
       data?.choices?.[0]?.message?.content ||
+      data?.error?.message ||
       "Erreur IA";
 
     res.json({
@@ -65,7 +68,7 @@ app.post("/chat", async (req, res) => {
     });
 
   } catch (err) {
-    console.log(err);
+    console.log("SERVER ERROR:", err);
 
     res.json({
       choices: [
