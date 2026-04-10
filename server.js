@@ -1,39 +1,36 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-// clé Hugging Face (à mettre dans Render env variables)
+// clé Hugging Face (Render Environment Variables)
 const HF_TOKEN = process.env.HF_TOKEN;
 
-// route test
+// test route
 app.get("/", (req, res) => {
-  res.send("Serveur IA actif 🚀");
+  res.send("Serveur IA OK 🚀");
 });
 
-// route chat (FORMAT PRO CHATGPT)
+// CHAT ROUTE
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
 
   if (!messages) {
     return res.json({
-      choices: [{
-        message: { content: "Aucun message reçu" }
-      }]
+      choices: [
+        {
+          message: { content: "Aucun message reçu" }
+        }
+      ]
     });
   }
 
   try {
-    const formatted = messages
-      .map(m => `${m.role}: ${m.content}`)
-      .join("\n");
-
     const response = await fetch(
-      "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
+      "https://router.huggingface.co/v1/chat/completions",
       {
         method: "POST",
         headers: {
@@ -41,24 +38,21 @@ app.post("/chat", async (req, res) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          inputs: formatted,
-          parameters: {
-            max_new_tokens: 300,
-            temperature: 0.7
-          }
+          model: "mistralai/Mistral-7B-Instruct-v0.2",
+          messages: messages,
+          temperature: 0.7,
+          max_tokens: 300
         })
       }
     );
 
     const data = await response.json();
 
-console.log("HF RESPONSE =", JSON.stringify(data, null, 2));
+    console.log("HF RESPONSE:", JSON.stringify(data, null, 2));
 
-const reply =
-  data?.[0]?.generated_text ??
-  data?.generated_text ??
-  data?.error ??
-  "Erreur IA";
+    const reply =
+      data?.choices?.[0]?.message?.content ||
+      "Erreur IA";
 
     res.json({
       choices: [
@@ -71,6 +65,8 @@ const reply =
     });
 
   } catch (err) {
+    console.log(err);
+
     res.json({
       choices: [
         {
@@ -83,8 +79,8 @@ const reply =
   }
 });
 
-// port Render
 const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, () => {
   console.log("Serveur IA en ligne sur port " + PORT);
 });
