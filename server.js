@@ -52,10 +52,13 @@ app.post("/chat", async (req, res) => {
 
     const data = await response.json();
 
-    const reply =
-      data?.[0]?.generated_text ||
-      data?.generated_text ||
-      "Erreur IA";
+console.log("HF RESPONSE =", JSON.stringify(data, null, 2));
+
+const reply =
+  data?.[0]?.generated_text ??
+  data?.generated_text ??
+  data?.error ??
+  "Erreur IA";
 
     res.json({
       choices: [
