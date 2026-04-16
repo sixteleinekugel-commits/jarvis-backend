@@ -39,7 +39,7 @@ app.post("/chat", async (req, res) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
+          model: "mistralai/Mistral-7B-Instruct-v0.2",
           messages: messages,
           temperature: 0.7,
           max_tokens: 300
