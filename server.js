@@ -6,7 +6,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// clé Hugging Face (dans Render Environment Variables)
 const HF_TOKEN = process.env.HF_TOKEN;
 
 // route test
@@ -40,7 +39,7 @@ app.post("/chat", async (req, res) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "Qwen/Qwen2.5-14B-Instruct"
+          model: "Qwen/Qwen2.5-14B-Instruct",
           messages: messages,
           temperature: 0.7,
           max_tokens: 300
