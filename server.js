@@ -17,6 +17,9 @@ app.get("/", (req, res) => {
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
 
+  // 🔍 DEBUG : vérifier la clé
+  console.log("GROQ_API_KEY =", process.env.GROQ_API_KEY);
+
   if (!messages) {
     return res.json({
       choices: [{ message: { content: "Aucun message reçu" } }]
@@ -43,9 +46,24 @@ app.post("/chat", async (req, res) => {
 
     const data = await response.json();
 
+    // 🔍 DEBUG : voir la réponse complète
+    console.log("GROQ RESPONSE:", JSON.stringify(data, null, 2));
+
+    // ❗ gestion des erreurs API
+    if (data.error) {
+      return res.json({
+        choices: [
+          {
+            message: {
+              content: "Erreur API : " + data.error.message
+            }
+          }
+        ]
+      });
+    }
+
     const reply =
       data?.choices?.[0]?.message?.content ||
-      data?.error?.message ||
       "Erreur IA";
 
     res.json({
@@ -53,7 +71,7 @@ app.post("/chat", async (req, res) => {
     });
 
   } catch (err) {
-    console.log(err);
+    console.log("SERVER ERROR:", err);
 
     res.json({
       choices: [{ message: { content: "Erreur serveur" } }]
