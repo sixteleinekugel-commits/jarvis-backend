@@ -6,40 +6,34 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const HF_TOKEN = process.env.HF_TOKEN;
+const PORT = process.env.PORT || 10000;
 
-// route test
+// test
 app.get("/", (req, res) => {
   res.send("Serveur IA OK 🚀");
 });
 
-// route chat
+// chat
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
 
   if (!messages) {
     return res.json({
-      choices: [
-        {
-          message: {
-            content: "Aucun message reçu"
-          }
-        }
-      ]
+      choices: [{ message: { content: "Aucun message reçu" } }]
     });
   }
 
   try {
     const response = await fetch(
-      "https://router.huggingface.co/v1/chat/completions",
+      "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${HF_TOKEN}`,
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "m8than/Mistral-Nemo-Instruct-2407-lenient-chatfix",
+          model: "llama3-70b-8192",
           messages: messages,
           temperature: 0.7,
           max_tokens: 300
@@ -49,39 +43,23 @@ app.post("/chat", async (req, res) => {
 
     const data = await response.json();
 
-    console.log("HF RESPONSE:", JSON.stringify(data, null, 2));
-
     const reply =
       data?.choices?.[0]?.message?.content ||
       data?.error?.message ||
       "Erreur IA";
 
     res.json({
-      choices: [
-        {
-          message: {
-            content: reply
-          }
-        }
-      ]
+      choices: [{ message: { content: reply } }]
     });
 
   } catch (err) {
-    console.log("SERVER ERROR:", err);
+    console.log(err);
 
     res.json({
-      choices: [
-        {
-          message: {
-            content: "Erreur serveur"
-          }
-        }
-      ]
+      choices: [{ message: { content: "Erreur serveur" } }]
     });
   }
 });
-
-const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log("Serveur IA en ligne sur port " + PORT);
