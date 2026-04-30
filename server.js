@@ -87,7 +87,7 @@ app.post("/image", async (req, res) => {
 
   try {
     const response = await fetch(
-      "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+      "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
       {
         method: "POST",
         headers: {
@@ -100,10 +100,9 @@ app.post("/image", async (req, res) => {
       }
     );
 
-    // 🔍 Vérifier le type de réponse
     const contentType = response.headers.get("content-type");
 
-    // ❌ Si ce n’est pas une image → erreur HF
+    // 🔥 gestion erreurs HF
     if (!contentType || !contentType.includes("image")) {
       const errorText = await response.text();
       console.log("HF ERROR:", errorText);
@@ -114,7 +113,6 @@ app.post("/image", async (req, res) => {
       });
     }
 
-    // ✅ Si image OK
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString("base64");
 
@@ -131,7 +129,7 @@ app.post("/image", async (req, res) => {
   }
 });
 
-// ===== START SERVER =====
+// ===== START =====
 app.listen(PORT, () => {
   console.log("Serveur IA en ligne sur port " + PORT);
 });
