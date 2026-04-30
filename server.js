@@ -16,7 +16,6 @@ app.get("/", (req, res) => {
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
 
-  // 🔍 DEBUG : vérifier la clé
   console.log("GROQ_API_KEY =", process.env.GROQ_API_KEY);
 
   if (!messages) {
@@ -44,11 +43,8 @@ app.post("/chat", async (req, res) => {
     );
 
     const data = await response.json();
-
-    // 🔍 DEBUG : voir la réponse complète
     console.log("GROQ RESPONSE:", JSON.stringify(data, null, 2));
 
-    // ❗ gestion des erreurs API
     if (data.error) {
       return res.json({
         choices: [
@@ -74,6 +70,39 @@ app.post("/chat", async (req, res) => {
     res.json({
       choices: [{ message: { content: "Erreur serveur" } }]
     });
+  }
+});
+
+// génération d'image
+app.post("/image", async (req, res) => {
+  const { prompt } = req.body;
+
+  console.log("HF_TOKEN =", process.env.HF_TOKEN);
+
+  if (!prompt) {
+    return res.json({ error: "Aucun prompt reçu" });
+  }
+
+  try {
+    const response = await fetch(
+      "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.HF_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ inputs: prompt })
+      }
+    );
+
+    const buffer = await response.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
+    res.json({ image: `data:image/jpeg;base64,${base64}` });
+
+  } catch (err) {
+    console.log("IMAGE ERROR:", err);
+    res.json({ error: "Erreur génération image" });
   }
 });
 
