@@ -75,7 +75,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ===== IMAGE (HUGGING FACE) =====
+// ===== IMAGE (HUGGING FACE FIXED) =====
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
 
@@ -87,7 +87,7 @@ app.post("/image", async (req, res) => {
 
   try {
     const response = await fetch(
-      "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
+      "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-2-1",
       {
         method: "POST",
         headers: {
@@ -100,9 +100,11 @@ app.post("/image", async (req, res) => {
       }
     );
 
+    console.log("STATUS:", response.status);
+
     const contentType = response.headers.get("content-type");
 
-    // 🔥 gestion erreurs HF
+    // ❌ erreur HF
     if (!contentType || !contentType.includes("image")) {
       const errorText = await response.text();
       console.log("HF ERROR:", errorText);
@@ -113,6 +115,7 @@ app.post("/image", async (req, res) => {
       });
     }
 
+    // ✅ image OK
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString("base64");
 
