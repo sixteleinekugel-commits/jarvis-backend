@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(cors());
@@ -57,9 +58,7 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    const reply =
-      data?.choices?.[0]?.message?.content ||
-      "Erreur IA";
+    const reply = data?.choices?.[0]?.message?.content || "Erreur IA";
 
     res.json({
       choices: [{ message: { content: reply } }]
@@ -85,32 +84,33 @@ app.post("/image", async (req, res) => {
   }
 
   try {
+    console.log("Appel Hugging Face en cours...");
+
     const response = await fetch(
       "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${process.env.HF_TOKEN}`,
-          "Content-Type": "application/json",
-          "Accept": "image/png"
+          "Authorization": `Bearer ${process.env.HF_TOKEN}`,
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
           inputs: prompt,
-          options: {
-            wait_for_model: true
-          }
+          options: { wait_for_model: true }
         })
       }
     );
 
-    // Vérifier si la réponse est bien une image
+    console.log("STATUS HF:", response.status);
     const contentType = response.headers.get("content-type");
     console.log("CONTENT TYPE:", contentType);
 
     if (!contentType || !contentType.includes("image")) {
       const errorText = await response.text();
       console.log("HF ERROR:", errorText);
-      return res.json({ error: "Modèle non disponible, réessaie dans 30 secondes." });
+      return res.json({
+        error: "Modèle non disponible, réessaie dans 30 secondes."
+      });
     }
 
     const buffer = await response.arrayBuffer();
@@ -119,7 +119,7 @@ app.post("/image", async (req, res) => {
 
   } catch (err) {
     console.log("IMAGE ERROR:", err);
-    res.json({ error: "Erreur génération image" });
+    res.json({ error: "Erreur génération image : " + err.message });
   }
 });
 
