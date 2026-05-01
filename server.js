@@ -2,18 +2,17 @@ import express from "express";
 import cors from "cors";
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// ===== TEST =====
+// test
 app.get("/", (req, res) => {
   res.send("Serveur IA OK 🚀");
 });
 
-// ===== CHAT (GROQ) =====
+// chat
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
 
@@ -38,7 +37,7 @@ app.post("/chat", async (req, res) => {
           model: "llama-3.3-70b-versatile",
           messages: messages,
           temperature: 0.7,
-          max_tokens: 300
+          max_tokens: 1024
         })
       }
     );
@@ -68,18 +67,18 @@ app.post("/chat", async (req, res) => {
 
   } catch (err) {
     console.log("SERVER ERROR:", err);
-
     res.json({
       choices: [{ message: { content: "Erreur serveur" } }]
     });
   }
 });
 
-// ===== IMAGE (HUGGING FACE FIXED) =====
+// génération d'image
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
 
   console.log("HF_TOKEN =", process.env.HF_TOKEN);
+  console.log("PROMPT =", prompt);
 
   if (!prompt) {
     return res.json({ error: "Aucun prompt reçu" });
@@ -87,52 +86,43 @@ app.post("/image", async (req, res) => {
 
   try {
     const response = await fetch(
-      "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-2-1",
+      "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${process.env.HF_TOKEN}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "Accept": "image/png"
         },
         body: JSON.stringify({
-          inputs: prompt
+          inputs: prompt,
+          options: {
+            wait_for_model: true
+          }
         })
       }
     );
 
-    console.log("STATUS:", response.status);
-
+    // Vérifier si la réponse est bien une image
     const contentType = response.headers.get("content-type");
+    console.log("CONTENT TYPE:", contentType);
 
-    // ❌ erreur HF
     if (!contentType || !contentType.includes("image")) {
       const errorText = await response.text();
       console.log("HF ERROR:", errorText);
-
-      return res.json({
-        error: "Erreur Hugging Face",
-        details: errorText
-      });
+      return res.json({ error: "Modèle non disponible, réessaie dans 30 secondes." });
     }
 
-    // ✅ image OK
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString("base64");
-
-    res.json({
-      image: `data:image/png;base64,${base64}`
-    });
+    res.json({ image: `data:image/png;base64,${base64}` });
 
   } catch (err) {
     console.log("IMAGE ERROR:", err);
-
-    res.json({
-      error: "Erreur génération image"
-    });
+    res.json({ error: "Erreur génération image" });
   }
 });
 
-// ===== START =====
 app.listen(PORT, () => {
   console.log("Serveur IA en ligne sur port " + PORT);
 });
