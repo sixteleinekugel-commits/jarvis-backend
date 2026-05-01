@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
+import axios from "axios";
 
 const app = express();
 app.use(cors());
@@ -26,49 +26,37 @@ app.post("/chat", async (req, res) => {
   }
 
   try {
-    const response = await fetch(
+    const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        method: "POST",
+        model: "llama-3.3-70b-versatile",
+        messages: messages,
+        temperature: 0.7,
+        max_tokens: 1024
+      },
+      {
         headers: {
           Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
           "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          messages: messages,
-          temperature: 0.7,
-          max_tokens: 1024
-        })
+        }
       }
     );
 
-    const data = await response.json();
+    const data = response.data;
     console.log("GROQ RESPONSE:", JSON.stringify(data, null, 2));
 
     if (data.error) {
       return res.json({
-        choices: [
-          {
-            message: {
-              content: "Erreur API : " + data.error.message
-            }
-          }
-        ]
+        choices: [{ message: { content: "Erreur API : " + data.error.message } }]
       });
     }
 
     const reply = data?.choices?.[0]?.message?.content || "Erreur IA";
-
-    res.json({
-      choices: [{ message: { content: reply } }]
-    });
+    res.json({ choices: [{ message: { content: reply } }] });
 
   } catch (err) {
-    console.log("SERVER ERROR:", err);
-    res.json({
-      choices: [{ message: { content: "Erreur serveur" } }]
-    });
+    console.log("SERVER ERROR:", err.message);
+    res.json({ choices: [{ message: { content: "Erreur serveur : " + err.message } }] });
   }
 });
 
@@ -86,39 +74,38 @@ app.post("/image", async (req, res) => {
   try {
     console.log("Appel Hugging Face en cours...");
 
-    const response = await fetch(
+    const response = await axios.post(
       "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
       {
-        method: "POST",
+        inputs: prompt,
+        options: { wait_for_model: true }
+      },
+      {
         headers: {
           "Authorization": `Bearer ${process.env.HF_TOKEN}`,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          inputs: prompt,
-          options: { wait_for_model: true }
-        })
+        responseType: "arraybuffer",
+        timeout: 60000
       }
     );
 
     console.log("STATUS HF:", response.status);
-    const contentType = response.headers.get("content-type");
-    console.log("CONTENT TYPE:", contentType);
+    console.log("CONTENT TYPE:", response.headers["content-type"]);
 
-    if (!contentType || !contentType.includes("image")) {
-      const errorText = await response.text();
-      console.log("HF ERROR:", errorText);
-      return res.json({
-        error: "Modèle non disponible, réessaie dans 30 secondes."
-      });
-    }
-
-    const buffer = await response.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString("base64");
+    const base64 = Buffer.from(response.data).toString("base64");
     res.json({ image: `data:image/png;base64,${base64}` });
 
   } catch (err) {
-    console.log("IMAGE ERROR:", err);
+    console.log("IMAGE ERROR STATUS:", err.response?.status);
+    console.log("IMAGE ERROR:", err.message);
+
+    if (err.response) {
+      const errText = Buffer.from(err.response.data).toString("utf8");
+      console.log("HF ERROR BODY:", errText);
+      return res.json({ error: "Hugging Face erreur : " + errText });
+    }
+
     res.json({ error: "Erreur génération image : " + err.message });
   }
 });
