@@ -31,7 +31,7 @@ app.post("/chat", async (req, res) => {
         model: "llama-3.3-70b-versatile",
         messages: messages,
         temperature: 0.7,
-        max_tokens: 1024
+        max_tokens: 4096
       });
 
       const req = https.request({
