@@ -1,10 +1,10 @@
 import express from "express";
 import cors from "cors";
-import axios from 'axios';
+import axios from "axios";
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "20mb" })); // Augmenté pour les images
 
 const PORT = process.env.PORT || 10000;
 const GROQ_TIMEOUT = 30000;
@@ -25,7 +25,7 @@ app.post("/chat", async (req, res) => {
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llama-3.3-70b-versatile", // Modèle textuel pour le chat
+        model: "llama-3.3-70b-versatile",
         messages: messages,
         temperature: 0.7,
         max_tokens: 4096
@@ -38,12 +38,13 @@ app.post("/chat", async (req, res) => {
         timeout: GROQ_TIMEOUT
       }
     );
-    const reply = response.data.choices?.[0]?.message?.content || "Désolé, je n'ai pas pu générer de réponse.";
+
+    const reply = response.data.choices?.[0]?.message?.content || "Sorry, I couldn't generate a response.";
     res.json({ choices: [{ message: { content: reply } }] });
   } catch (err) {
     console.error("CHAT ERROR:", err.response?.data || err.message);
     res.status(500).json({
-      error: "Erreur serveur: " + (err.response?.data?.error?.message || err.message)
+      error: "Server error: " + (err.response?.data?.error?.message || err.message)
     });
   }
 });
@@ -52,30 +53,32 @@ app.post("/chat", async (req, res) => {
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) {
-    return res.status(400).json({ error: "Aucune invitation reçue" });
+    return res.status(400).json({ error: "No prompt received" });
   }
 
   try {
     const encodedPrompt = encodeURIComponent(prompt);
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true&quality=0.8`;
+
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
       timeout: GROQ_TIMEOUT
     });
+
     const base64 = Buffer.from(imageResponse.data).toString("base64");
     res.json({ image: `data:image/jpeg;base64,${base64}` });
   } catch (err) {
     console.error("IMAGE ERROR:", err.message);
-    res.status(500).json({ error: "Échec de la génération d'image: " + err.message });
+    res.status(500).json({ error: "Image generation failed: " + err.message });
   }
 });
 
 // --- Analyse d'image (Pollinations.ai) ---
-app.post("/analyze-image", async (req, res) => {
-  const { image } = req.body;
+app.post("/analyze", async (req, res) => {
+  const { image, question } = req.body;
 
   if (!image || !image.startsWith("data:image/")) {
-    return res.status(400).json({ error: "Format d'image invalide. Une URL de données est attendue." });
+    return res.status(400).json({ error: "Invalid image format. Expected a data URL." });
   }
 
   try {
@@ -87,7 +90,7 @@ app.post("/analyze-image", async (req, res) => {
       "https://api.pollinations.ai/describe",
       {
         image: base64Image,
-        prompt: "Décris cette image en détail. Que vois-tu ? Sois précis et utilise le français."
+        prompt: question || "Describe this image in detail. What do you see? Be precise and use English."
       },
       {
         headers: {
@@ -97,24 +100,33 @@ app.post("/analyze-image", async (req, res) => {
       }
     );
 
-    const analysis = response.data?.description || "Je n'ai pas pu analyser cette image.";
-    res.json({ success: true, analysis });
+    // Formater la réponse comme Groq pour être compatible avec ton frontend
+    const analysis = response.data?.description || "I couldn't analyze this image.";
+
+    res.json({
+      choices: [
+        {
+          message: {
+            content: analysis
+          }
+        }
+      ]
+    });
 
   } catch (err) {
     console.error("IMAGE ANALYSIS ERROR:", err.response?.data || err.message);
     res.status(500).json({
-      success: false,
-      error: "Échec de l'analyse d'image: " + (err.response?.data?.error || err.message)
+      error: "Image analysis failed: " + (err.response?.data?.error || err.message)
     });
   }
 });
 
-// --- Démarrage du serveur ---
+// --- Démarrage ---
 app.listen(PORT, () => {
   console.log(`Nova AI Server running on port ${PORT}`);
   console.log(`Endpoints:`);
   console.log(`- GET  /          : Test`);
-  console.log(`- POST /chat      : Chat avec Groq (llama-3.3-70b-versatile)`);
-  console.log(`- POST /image     : Générer une image (Pollinations.ai)`);
-  console.log(`- POST /analyze-image : Analyser une image (Pollinations.ai)`);
+  console.log(`- POST /chat      : Chat with Groq`);
+  console.log(`- POST /image     : Generate image (Pollinations.ai)`);
+  console.log(`- POST /analyze   : Analyze image (Pollinations.ai)`);
 });
