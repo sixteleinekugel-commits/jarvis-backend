@@ -7,7 +7,7 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 10000;
-const GROQ_TIMEOUT = 30000; // Timeout pour les requêtes Groq (30 secondes)
+const GROQ_TIMEOUT = 30000; // Timeout de 30 secondes pour les requêtes Groq
 
 // --- Test ---
 app.get("/", (req, res) => {
@@ -27,7 +27,7 @@ app.post("/chat", async (req, res) => {
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llama-3.3-70b-versatile",
+        model: "llama-3.3-70b-versatile", // Modèle textuel pour le chat
         messages: messages,
         temperature: 0.7,
         max_tokens: 4096
@@ -89,13 +89,12 @@ app.post("/analyze-image", async (req, res) => {
   }
 
   try {
-    console.log("Analyzing image with model: llava-1.5-7b");
+    console.log("Analyzing image with model: llava-1.5-8b");
 
-    // ⚠️ CORRECTION : Format exact pour Groq (image_url doit être un objet avec une clé "url")
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llava-1.5-7b",
+        model: "llava-1.5-8b", // Modèle multimodal pour l'analyse d'images
         messages: [
           {
             role: "user",
@@ -107,7 +106,7 @@ app.post("/analyze-image", async (req, res) => {
               {
                 type: "image_url",
                 image_url: {
-                  url: image  // ⚠️ ICI : image_url est un OBJET avec une clé "url"
+                  url: image // Format correct pour Groq : { url: "data:image/..." }
                 }
               }
             ]
@@ -148,5 +147,5 @@ app.listen(PORT, () => {
   console.log(`- GET  /          : Test`);
   console.log(`- POST /chat      : Chat with Groq (llama-3.3-70b-versatile)`);
   console.log(`- POST /image     : Generate image (Pollinations.ai)`);
-  console.log(`- POST /analyze-image : Analyze image (Groq LLaVA-1.5-7b)`);
+  console.log(`- POST /analyze-image : Analyze image (Groq LLaVA-1.5-8b)`);
 });
