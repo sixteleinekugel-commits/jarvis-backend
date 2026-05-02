@@ -9,12 +9,12 @@ app.use(express.json({ limit: "10mb" }));
 const PORT = process.env.PORT || 10000;
 const GROQ_TIMEOUT = 30000;
 
-// Test
+// --- Test ---
 app.get("/", (req, res) => {
-  res.send("JARVIS AI Server OK 🚀");
+  res.send("Nova AI Server OK 🚀");
 });
 
-// Chat (Groq)
+// --- Chat (Groq) ---
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
   if (!messages || !Array.isArray(messages)) {
@@ -25,7 +25,7 @@ app.post("/chat", async (req, res) => {
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llama-3.3-70b-versatile",
+        model: "llama-3.3-70b-versatile", // Modèle textuel pour le chat
         messages: messages,
         temperature: 0.7,
         max_tokens: 4096
@@ -38,26 +38,26 @@ app.post("/chat", async (req, res) => {
         timeout: GROQ_TIMEOUT
       }
     );
-    const reply = response.data.choices?.[0]?.message?.content || "AI Error";
+    const reply = response.data.choices?.[0]?.message?.content || "Désolé, je n'ai pas pu générer de réponse.";
     res.json({ choices: [{ message: { content: reply } }] });
   } catch (err) {
     console.error("CHAT ERROR:", err.response?.data || err.message);
     res.status(500).json({
-      error: "Server error: " + (err.response?.data?.error?.message || err.message)
+      error: "Erreur serveur: " + (err.response?.data?.error?.message || err.message)
     });
   }
 });
 
-// Génération d'image (Pollinations.ai)
+// --- Génération d'image (Pollinations.ai) ---
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) {
-    return res.status(400).json({ error: "No prompt received" });
+    return res.status(400).json({ error: "Aucune invitation reçue" });
   }
 
   try {
     const encodedPrompt = encodeURIComponent(prompt);
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true&quality=0.8`;
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
       timeout: GROQ_TIMEOUT
@@ -66,59 +66,55 @@ app.post("/image", async (req, res) => {
     res.json({ image: `data:image/jpeg;base64,${base64}` });
   } catch (err) {
     console.error("IMAGE ERROR:", err.message);
-    res.status(500).json({ error: "Image generation failed: " + err.message });
+    res.status(500).json({ error: "Échec de la génération d'image: " + err.message });
   }
 });
 
-// Analyse d'image (Groq LLaVA) - MODÈLE 100% FONCTIONNEL
+// --- Analyse d'image (Pollinations.ai) ---
 app.post("/analyze-image", async (req, res) => {
   const { image } = req.body;
 
   if (!image || !image.startsWith("data:image/")) {
-    return res.status(400).json({ error: "Invalid image format. Expected a data URL." });
+    return res.status(400).json({ error: "Format d'image invalide. Une URL de données est attendue." });
   }
 
   try {
-    console.log("Analyzing image with model: llava-v1.1-7b");
+    // Extraire la partie base64 de la data URL
+    const base64Image = image.split(',')[1];
 
+    // Envoyer à Pollinations.ai pour analyse
     const response = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
+      "https://api.pollinations.ai/describe",
       {
-        model: "llava-v1.1-7b", // ✅ MODÈLE MULTIMODAL DISPONIBLE ET TESTÉ
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Describe this image in detail. What do you see?" },
-              { type: "image_url", image_url: { url: image } }
-            ]
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 1024
+        image: base64Image,
+        prompt: "Décris cette image en détail. Que vois-tu ? Sois précis et utilise le français."
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
           "Content-Type": "application/json"
         },
         timeout: GROQ_TIMEOUT
       }
     );
 
-    const analysis = response.data.choices?.[0]?.message?.content;
+    const analysis = response.data?.description || "Je n'ai pas pu analyser cette image.";
     res.json({ success: true, analysis });
 
   } catch (err) {
     console.error("IMAGE ANALYSIS ERROR:", err.response?.data || err.message);
     res.status(500).json({
       success: false,
-      error: "Image analysis failed: " + (err.response?.data?.error?.message || err.message)
+      error: "Échec de l'analyse d'image: " + (err.response?.data?.error || err.message)
     });
   }
 });
 
-// Démarrage
+// --- Démarrage du serveur ---
 app.listen(PORT, () => {
-  console.log(`JARVIS AI Server running on port ${PORT}`);
+  console.log(`Nova AI Server running on port ${PORT}`);
+  console.log(`Endpoints:`);
+  console.log(`- GET  /          : Test`);
+  console.log(`- POST /chat      : Chat avec Groq (llama-3.3-70b-versatile)`);
+  console.log(`- POST /image     : Générer une image (Pollinations.ai)`);
+  console.log(`- POST /analyze-image : Analyser une image (Pollinations.ai)`);
 });
