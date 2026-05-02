@@ -4,10 +4,11 @@ import axios from "axios";
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "20mb" })); // Augmenté pour les images
+app.use(express.json({ limit: "20mb" }));
 
 const PORT = process.env.PORT || 10000;
 const GROQ_TIMEOUT = 30000;
+const REPLICATE_TIMEOUT = 60000; // Replicate peut prendre plus de temps
 
 // --- Test ---
 app.get("/", (req, res) => {
@@ -73,7 +74,7 @@ app.post("/image", async (req, res) => {
   }
 });
 
-// --- Analyse d'image (Pollinations.ai) ---
+// --- Analyse d'image (Replicate) ---
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
 
@@ -85,23 +86,55 @@ app.post("/analyze", async (req, res) => {
     // Extraire la partie base64 de la data URL
     const base64Image = image.split(',')[1];
 
-    // Envoyer à Pollinations.ai pour analyse
+    // Envoyer à Replicate pour analyse avec LLaVA-13b
     const response = await axios.post(
-      "https://api.pollinations.ai/describe",
+      "https://api.replicate.com/v1/predictions",
       {
-        image: base64Image,
-        prompt: question || "Describe this image in detail. What do you see? Be precise and use English."
+        version: "b21cbe271e65345e33d81a65b04f4354c52736b56f3b5789990146644595ab25", // LLaVA-13b
+        input: {
+          image: base64Image,
+          prompt: question || "Describe this image in detail. What do you see? Be precise and use English."
+        }
       },
       {
         headers: {
+          Authorization: `Token ${process.env.REPLICATE_API_KEY}`,
           "Content-Type": "application/json"
         },
-        timeout: GROQ_TIMEOUT
+        timeout: REPLICATE_TIMEOUT
       }
     );
 
+    // Récupérer le résultat (Replicate est asynchrone)
+    const predictionId = response.data.id;
+    let prediction;
+
+    // Attendre que le résultat soit prêt (polling)
+    while (true) {
+      const predResponse = await axios.get(
+        `https://api.replicate.com/v1/predictions/${predictionId}`,
+        {
+          headers: {
+            Authorization: `Token ${process.env.REPLICATE_API_KEY}`
+          },
+          timeout: REPLICATE_TIMEOUT
+        }
+      );
+
+      prediction = predResponse.data;
+
+      if (prediction.status === "succeeded") {
+        break;
+      } else if (prediction.status === "failed") {
+        throw new Error(prediction.error || "Prediction failed");
+      }
+
+      // Attendre 1 seconde avant de vérifier à nouveau
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
     // Formater la réponse comme Groq pour être compatible avec ton frontend
-    const analysis = response.data?.description || "I couldn't analyze this image.";
+    const analysis = prediction.output?.join(" ") || "I couldn't analyze this image.";
 
     res.json({
       choices: [
@@ -128,5 +161,5 @@ app.listen(PORT, () => {
   console.log(`- GET  /          : Test`);
   console.log(`- POST /chat      : Chat with Groq`);
   console.log(`- POST /image     : Generate image (Pollinations.ai)`);
-  console.log(`- POST /analyze   : Analyze image (Pollinations.ai)`);
+  console.log(`- POST /analyze   : Analyze image (Replicate LLaVA-13b)`);
 });
