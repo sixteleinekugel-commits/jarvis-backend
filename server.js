@@ -8,13 +8,17 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 10000;
 
+// Test
 app.get("/", (req, res) => {
   res.send("JARVIS AI Server OK 🚀");
 });
 
+// Chat (Groq)
 app.post("/chat", async (req, res) => {
   const messages = req.body.messages;
-  if (!messages) return res.status(400).json({ error: "No messages" });
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ error: "No messages received" });
+  }
 
   try {
     const response = await axios.post(
@@ -32,29 +36,41 @@ app.post("/chat", async (req, res) => {
         }
       }
     );
-    res.json({ choices: [{ message: { content: response.data.choices[0].message.content } }] });
+    const reply = response.data.choices?.[0]?.message?.content || "AI Error";
+    res.json({ choices: [{ message: { content: reply } }] });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("CHAT ERROR:", err.message);
+    res.status(500).json({ error: "Server error: " + err.message });
   }
 });
 
+// Génération d'image (Pollinations.ai)
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
-  if (!prompt) return res.status(400).json({ error: "No prompt" });
+  if (!prompt) {
+    return res.status(400).json({ error: "No prompt received" });
+  }
 
   try {
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=512&nologo=true`;
-    const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const encodedPrompt = encodeURIComponent(prompt);
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
+    const imageResponse = await axios.get(imageUrl, {
+      responseType: 'arraybuffer'
+    });
     const base64 = Buffer.from(imageResponse.data).toString("base64");
     res.json({ image: `data:image/jpeg;base64,${base64}` });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("IMAGE ERROR:", err.message);
+    res.status(500).json({ error: "Image generation failed: " + err.message });
   }
 });
 
+// Analyse d'image (Groq LLaVA)
 app.post("/analyze-image", async (req, res) => {
   const { image } = req.body;
-  if (!image) return res.status(400).json({ error: "No image" });
+  if (!image) {
+    return res.status(400).json({ error: "No image received" });
+  }
 
   try {
     const response = await axios.post(
@@ -64,7 +80,7 @@ app.post("/analyze-image", async (req, res) => {
         messages: [{
           role: "user",
           content: [
-            { type: "text", text: "Describe this image in detail." },
+            { type: "text", text: "Describe this image in detail. What do you see? Be precise and use English." },
             { type: "image_url", image_url: image }
           ]
         }],
@@ -78,12 +94,15 @@ app.post("/analyze-image", async (req, res) => {
         }
       }
     );
-    res.json({ success: true, analysis: response.data.choices[0].message.content });
+    const analysis = response.data.choices?.[0]?.message?.content || "No analysis available.";
+    res.json({ success: true, analysis });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("IMAGE ANALYSIS ERROR:", err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
+// Démarrage
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`JARVIS AI Server running on port ${PORT}`);
 });
