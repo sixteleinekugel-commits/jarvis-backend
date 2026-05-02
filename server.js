@@ -79,18 +79,18 @@ app.post("/analyze-image", async (req, res) => {
   }
 
   try {
-    console.log("Analyzing image with model: llava-13b-v1.1");
+    console.log("Analyzing image with model: llava-v1.1-7b");
 
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "llava-13b-v1.1", // ✅ MODÈLE MULTIMODAL DISPONIBLE EN MAI 2026
+        model: "llava-v1.1-7b", // ✅ MODÈLE MULTIMODAL DISPONIBLE ET TESTÉ
         messages: [
           {
             role: "user",
             content: [
               { type: "text", text: "Describe this image in detail. What do you see?" },
-              { type: "image_url", image_url: { url: image } } // Format correct
+              { type: "image_url", image_url: { url: image } }
             ]
           }
         ],
