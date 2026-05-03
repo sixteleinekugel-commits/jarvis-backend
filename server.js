@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import axios from "axios";
+import https from "https";
 
 const app = express();
 app.use(cors());
@@ -51,67 +52,48 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-async function replicateRun(modelUrl, input) {
-  const token = process.env.REPLICATE_API_TOKEN;
-  console.log("REPLICATE TOKEN =", token ? "OK" : "MISSING");
-
-  const createRes = await axios.post(
-    modelUrl,
-    { input },
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "Prefer": "wait=60"
-      }
-    }
-  );
-
-  const prediction = createRes.data;
-  console.log("REPLICATE STATUS:", prediction.status);
-
-  if (prediction.status === "succeeded" && prediction.output) {
-    return prediction.output;
-  }
-
-  const pollUrl = `https://api.replicate.com/v1/predictions/${prediction.id}`;
-
-  while (true) {
-    await new Promise(r => setTimeout(r, 2000));
-
-    const pollRes = await axios.get(pollUrl, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-
-    const p = pollRes.data;
-    console.log("Polling:", p.status);
-
-    if (p.status === "succeeded") return p.output;
-    if (p.status === "failed" || p.status === "canceled") {
-      throw new Error(p.error || "Prediction failed");
-    }
-  }
-}
-
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
-  console.log("ANALYZE — question:", question);
+  console.log("GROQ VISION — question:", question);
+  console.log("GROQ_API_KEY =", process.env.GROQ_API_KEY ? "OK" : "MISSING");
 
   if (!image) {
     return res.json({ choices: [{ message: { content: "No image received" } }] });
   }
 
   try {
-    const output = await replicateRun(
-      "https://api.replicate.com/v1/models/yorickvp/llava-13b/predictions",
+    const response = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
       {
-        image: image,
-        prompt: question || "Analyze this image in detail. Describe everything you see: objects, colors, context, text if any, and anything relevant.",
-        max_tokens: 1024
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image_url",
+                image_url: { url: image }
+              },
+              {
+                type: "text",
+                text: question || "Analyze this image in detail. Describe everything you see: objects, colors, context, text if any, and anything relevant."
+              }
+            ]
+          }
+        ],
+        max_tokens: 2048,
+        temperature: 0.7
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        }
       }
     );
 
-    const reply = Array.isArray(output) ? output.join("") : output;
+    const reply = response.data?.choices?.[0]?.message?.content || "Could not analyze image";
+    console.log("VISION REPLY:", reply.slice(0, 100));
     res.json({ choices: [{ message: { content: reply } }] });
 
   } catch (err) {
@@ -127,23 +109,33 @@ app.post("/image", async (req, res) => {
   if (!prompt) return res.json({ error: "No prompt received" });
 
   try {
-    const output = await replicateRun(
-      "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
-      {
-        prompt: prompt,
-        num_outputs: 1,
-        aspect_ratio: "1:1",
-        output_format: "jpg",
-        output_quality: 90
-      }
-    );
+    const encodedPrompt = encodeURIComponent(prompt);
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
+    console.log("Pollinations URL:", imageUrl);
 
-    const imageUrl = Array.isArray(output) ? output[0] : output;
-    console.log("IMAGE URL:", imageUrl);
-    res.json({ image: imageUrl });
+    const imageBuffer = await new Promise((resolve, reject) => {
+      function doGet(url, redirectCount = 0) {
+        if (redirectCount > 5) { reject(new Error("Too many redirects")); return; }
+        https.get(url, (response) => {
+          if (response.statusCode === 301 || response.statusCode === 302) {
+            doGet(response.headers.location, redirectCount + 1);
+            return;
+          }
+          console.log("Pollinations STATUS:", response.statusCode);
+          const chunks = [];
+          response.on("data", chunk => chunks.push(chunk));
+          response.on("end", () => resolve(Buffer.concat(chunks)));
+          response.on("error", reject);
+        }).on("error", reject);
+      }
+      doGet(imageUrl);
+    });
+
+    const base64 = imageBuffer.toString("base64");
+    res.json({ image: `data:image/jpeg;base64,${base64}` });
 
   } catch (err) {
-    console.log("IMAGE ERROR:", err.response?.data || err.message);
+    console.log("IMAGE ERROR:", err.message);
     res.json({ error: "Image generation error: " + err.message });
   }
 });
