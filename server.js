@@ -65,14 +65,14 @@ app.post("/analyze", async (req, res) => {
   }
 
   try {
-    // Essayer d'abord avec Replicate (LLaVA-13b)
+    // ✅ 1. Essayer d'abord avec Replicate (LLaVA-13b)
     try {
       const createRes = await axios.post(
         "https://api.replicate.com/v1/models/yorickvp/llava-13b/predictions",
         {
           input: {
             image: image,
-            prompt: question || "Analyze this image in detail.",
+            prompt: question || "Analyze this image in detail. Describe everything you see: objects, colors, context, text if any, and anything relevant.",
             max_tokens: 2048
           }
         },
@@ -86,11 +86,14 @@ app.post("/analyze", async (req, res) => {
       );
 
       const prediction = createRes.data;
+      console.log("REPLICATE STATUS:", prediction.status);
+
       if (prediction.status === "succeeded" && prediction.output) {
         const reply = Array.isArray(prediction.output) ? prediction.output.join("") : prediction.output;
         return res.json({ choices: [{ message: { content: reply } }] });
       }
 
+      // Polling si nécessaire
       const pollUrl = `https://api.replicate.com/v1/predictions/${prediction.id}`;
       for (let i = 0; i < 15; i++) {
         await new Promise(r => setTimeout(r, 2000));
@@ -98,6 +101,8 @@ app.post("/analyze", async (req, res) => {
           headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }
         });
         const p = pollRes.data;
+        console.log("Polling:", p.status);
+
         if (p.status === "succeeded") {
           const reply = Array.isArray(p.output) ? p.output.join("") : p.output;
           return res.json({ choices: [{ message: { content: reply } }] });
@@ -106,11 +111,12 @@ app.post("/analyze", async (req, res) => {
           throw new Error(p.error || "Prediction failed");
         }
       }
+      throw new Error("Replicate timeout");
     } catch (replicateErr) {
       console.log("Replicate failed, falling back to Pollinations:", replicateErr.message);
     }
 
-    // Fallback vers Pollinations.ai
+    // ✅ 2. Fallback vers Pollinations.ai
     const base64Image = image.split(',')[1];
     const response = await axios.post(
       "https://api.pollinations.ai/describe",
@@ -126,7 +132,7 @@ app.post("/analyze", async (req, res) => {
   }
 });
 
-// --- Génération d'image (Fal.ai + Pollinations.ai fallback) ---
+// --- Génération d'image (Fal.ai flux/schnell + Pollinations.ai fallback) ---
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   console.log("IMAGE PROMPT =", prompt);
@@ -134,14 +140,18 @@ app.post("/image", async (req, res) => {
   if (!prompt) return res.json({ error: "No prompt received" });
 
   try {
-    // ✅ 1. Essayer d'abord avec Fal.ai (FLUX)
+    // ✅ 1. Essayer d'abord avec Fal.ai (flux/schnell - CORRIGÉ 2026)
     try {
       const response = await axios.post(
-        "https://fal.run/fal-ai/fast-flux",  // Modèle FLUX (meilleur)
+        "https://fal.run/fal-ai/flux/schnell",  // ✅ Endpoint CORRIGÉ
         {
           prompt: prompt,
-          logs: false,
-          sync: true
+          sync: true,  // Attendre la réponse immédiatement
+          // Paramètres optionnels pour FLUX :
+          // width: 1024,
+          // height: 1024,
+          // num_inference_steps: 30,
+          // guidance_scale: 7.5
         },
         {
           headers: {
@@ -152,18 +162,35 @@ app.post("/image", async (req, res) => {
         }
       );
 
-      if (response.data?.images?.[0]) {
-        const base64Image = response.data.images[0];
-        return res.json({ image: `data:image/jpeg;base64,${base64Image}` });
+      // Fal.ai retourne l'image en base64 dans response.data
+      if (response.data) {
+        // Cas 1: Réponse directe en base64
+        if (typeof response.data === 'string' && response.data.startsWith('data:image/')) {
+          return res.json({ image: response.data });
+        }
+        // Cas 2: Réponse avec un tableau d'images
+        else if (response.data.images && Array.isArray(response.data.images) && response.data.images[0]) {
+          const base64Image = response.data.images[0];
+          return res.json({ image: `data:image/jpeg;base64,${base64Image}` });
+        }
+        // Cas 3: Réponse avec un objet contenant l'image
+        else if (response.data.image) {
+          const base64Image = response.data.image;
+          return res.json({ image: `data:image/jpeg;base64,${base64Image}` });
+        } else {
+          throw new Error("Unexpected Fal.ai response format: " + JSON.stringify(response.data));
+        }
       } else {
         throw new Error("No image in Fal.ai response");
       }
 
     } catch (falErr) {
-      console.log("Fal.ai failed, falling back to Pollinations:", falErr.message);
+      console.log("Fal.ai failed (using Pollinations fallback):", falErr.message);
+      // Si Fal.ai échoue (404, 401, 429, timeout), on passe à Pollinations
     }
 
-    // ✅ 2. Fallback vers Pollinations.ai
+    // ✅ 2. Fallback vers Pollinations.ai (100% gratuit)
+    console.log("Using Pollinations.ai fallback...");
     const encodedPrompt = encodeURIComponent(prompt);
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=768&height=768&nologo=true&enhance=true`;
     const imageResponse = await axios.get(imageUrl, {
@@ -183,7 +210,7 @@ app.listen(PORT, () => {
   console.log(`Nova AI Server running on port ${PORT}`);
   console.log(`Endpoints:`);
   console.log(`- GET  /          : Test`);
-  console.log(`- POST /chat      : Chat with Groq`);
-  console.log(`- POST /image     : Generate image (Fal.ai + Pollinations.ai fallback)`);
-  console.log(`- POST /analyze   : Analyze image (Replicate + Pollinations.ai fallback)`);
+  console.log(`- POST /chat      : Chat with Groq (llama-3.3-70b-versatile)`);
+  console.log(`- POST /image     : Generate image (Fal.ai flux/schnell + Pollinations.ai fallback)`);
+  console.log(`- POST /analyze   : Analyze image (Replicate LLaVA-13b + Pollinations.ai fallback)`);
 });
