@@ -1,25 +1,24 @@
 import express from "express";
 import cors from "cors";
 import axios from "axios";
+import https from "https";
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
 const PORT = process.env.PORT || 10000;
-const GROQ_TIMEOUT = 30000;
-const REPLICATE_TIMEOUT = 60000; // Replicate peut prendre plus de temps
 
-// --- Test ---
 app.get("/", (req, res) => {
   res.send("Nova AI Server OK 🚀");
 });
 
-// --- Chat (Groq) ---
 app.post("/chat", async (req, res) => {
-  const messages = req.body.messages;
-  if (!messages || !Array.isArray(messages)) {
-    return res.status(400).json({ error: "No messages received" });
+  const { messages } = req.body;
+  console.log("GROQ_API_KEY =", process.env.GROQ_API_KEY ? "OK" : "MISSING");
+
+  if (!messages) {
+    return res.json({ choices: [{ message: { content: "No message received" } }] });
   }
 
   try {
@@ -27,139 +26,157 @@ app.post("/chat", async (req, res) => {
       "https://api.groq.com/openai/v1/chat/completions",
       {
         model: "llama-3.3-70b-versatile",
-        messages: messages,
+        messages,
         temperature: 0.7,
-        max_tokens: 4096
+        max_tokens: 2048
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
           "Content-Type": "application/json"
-        },
-        timeout: GROQ_TIMEOUT
+        }
       }
     );
 
-    const reply = response.data.choices?.[0]?.message?.content || "Sorry, I couldn't generate a response.";
+    const data = response.data;
+
+    if (data.error) {
+      return res.json({ choices: [{ message: { content: "API Error: " + data.error.message } }] });
+    }
+
+    const reply = data?.choices?.[0]?.message?.content || "AI Error";
     res.json({ choices: [{ message: { content: reply } }] });
+
   } catch (err) {
-    console.error("CHAT ERROR:", err.response?.data || err.message);
-    res.status(500).json({
-      error: "Server error: " + (err.response?.data?.error?.message || err.message)
-    });
+    console.log("CHAT ERROR:", err.message);
+    res.json({ choices: [{ message: { content: "Server error: " + err.message } }] });
   }
 });
 
-// --- Génération d'image (Pollinations.ai) ---
-app.post("/image", async (req, res) => {
-  const { prompt } = req.body;
-  if (!prompt) {
-    return res.status(400).json({ error: "No prompt received" });
-  }
-
-  try {
-    const encodedPrompt = encodeURIComponent(prompt);
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true&quality=0.8`;
-
-    const imageResponse = await axios.get(imageUrl, {
-      responseType: 'arraybuffer',
-      timeout: GROQ_TIMEOUT
-    });
-
-    const base64 = Buffer.from(imageResponse.data).toString("base64");
-    res.json({ image: `data:image/jpeg;base64,${base64}` });
-  } catch (err) {
-    console.error("IMAGE ERROR:", err.message);
-    res.status(500).json({ error: "Image generation failed: " + err.message });
-  }
-});
-
-// --- Analyse d'image (Replicate) ---
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
+  console.log("REPLICATE TOKEN =", process.env.REPLICATE_API_TOKEN ? "OK" : "MISSING");
+  console.log("QUESTION =", question);
 
-  if (!image || !image.startsWith("data:image/")) {
-    return res.status(400).json({ error: "Invalid image format. Expected a data URL." });
+  if (!image) {
+    return res.json({ choices: [{ message: { content: "No image received" } }] });
   }
 
   try {
-    // Extraire la partie base64 de la data URL
-    const base64Image = image.split(',')[1];
-
-    // Envoyer à Replicate pour analyse avec LLaVA-13b
-    const response = await axios.post(
-      "https://api.replicate.com/v1/predictions",
+    const createRes = await axios.post(
+      "https://api.replicate.com/v1/models/yorickvp/llava-13b/predictions",
       {
-        version: "b21cbe271e65345e33d81a65b04f4354c52736b56f3b5789990146644595ab25", // LLaVA-13b
         input: {
-          image: base64Image,
-          prompt: question || "Describe this image in detail. What do you see? Be precise and use English."
+          image: image,
+          prompt: question || "Analyze this image in detail. Describe everything you see: objects, colors, context, text if any, and anything relevant.",
+          max_tokens: 1024
         }
       },
       {
         headers: {
-          Authorization: `Token ${process.env.REPLICATE_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        timeout: REPLICATE_TIMEOUT
+          Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`,
+          "Content-Type": "application/json",
+          "Prefer": "wait"
+        }
       }
     );
 
-    // Récupérer le résultat (Replicate est asynchrone)
-    const predictionId = response.data.id;
-    let prediction;
+    const prediction = createRes.data;
+    console.log("REPLICATE STATUS:", prediction.status);
 
-    // Attendre que le résultat soit prêt (polling)
-    while (true) {
-      const predResponse = await axios.get(
-        `https://api.replicate.com/v1/predictions/${predictionId}`,
-        {
-          headers: {
-            Authorization: `Token ${process.env.REPLICATE_API_KEY}`
-          },
-          timeout: REPLICATE_TIMEOUT
-        }
-      );
-
-      prediction = predResponse.data;
-
-      if (prediction.status === "succeeded") {
-        break;
-      } else if (prediction.status === "failed") {
-        throw new Error(prediction.error || "Prediction failed");
-      }
-
-      // Attendre 1 seconde avant de vérifier à nouveau
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    if (prediction.status === "succeeded" && prediction.output) {
+      const reply = Array.isArray(prediction.output)
+        ? prediction.output.join("")
+        : prediction.output;
+      return res.json({ choices: [{ message: { content: reply } }] });
     }
 
-    // Formater la réponse comme Groq pour être compatible avec ton frontend
-    const analysis = prediction.output?.join(" ") || "I couldn't analyze this image.";
+    const pollUrl = prediction.urls?.get || `https://api.replicate.com/v1/predictions/${prediction.id}`;
+    let attempts = 0;
 
-    res.json({
-      choices: [
-        {
-          message: {
-            content: analysis
-          }
+    while (attempts < 30) {
+      await new Promise(r => setTimeout(r, 2000));
+      attempts++;
+
+      const pollRes = await axios.get(pollUrl, {
+        headers: {
+          Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`
         }
-      ]
-    });
+      });
+
+      const p = pollRes.data;
+      console.log(`Polling ${attempts}: ${p.status}`);
+
+      if (p.status === "succeeded") {
+        const reply = Array.isArray(p.output) ? p.output.join("") : p.output;
+        return res.json({ choices: [{ message: { content: reply } }] });
+      }
+
+      if (p.status === "failed" || p.status === "canceled") {
+        return res.json({
+          choices: [{
+            message: {
+              content: "⚠️ Analysis failed: " + (p.error || "unknown error")
+            }
+          }]
+        });
+      }
+    }
+
+    res.json({ choices: [{ message: { content: "⚠️ Analysis timed out. Try again." } }] });
 
   } catch (err) {
-    console.error("IMAGE ANALYSIS ERROR:", err.response?.data || err.message);
-    res.status(500).json({
-      error: "Image analysis failed: " + (err.response?.data?.error || err.message)
+    console.log("ANALYZE ERROR:", err.response?.data || err.message);
+    res.json({
+      choices: [{
+        message: {
+          content: "⚠️ Error during analysis: " + err.message
+        }
+      }]
     });
   }
 });
 
-// --- Démarrage ---
+app.post("/image", async (req, res) => {
+  const { prompt } = req.body;
+  console.log("IMAGE PROMPT =", prompt);
+
+  if (!prompt) return res.json({ error: "No prompt received" });
+
+  try {
+    const encodedPrompt = encodeURIComponent(prompt);
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=768&height=768&nologo=true&enhance=true`;
+    console.log("Pollinations URL:", imageUrl);
+
+    const imageBuffer = await new Promise((resolve, reject) => {
+      function doGet(url, redirectCount = 0) {
+        if (redirectCount > 5) { reject(new Error("Too many redirects")); return; }
+        https.get(url, (response) => {
+          if (response.statusCode === 301 || response.statusCode === 302) {
+            console.log("Redirect →", response.headers.location);
+            doGet(response.headers.location, redirectCount + 1);
+            return;
+          }
+          console.log("Pollinations STATUS:", response.statusCode);
+          console.log("CONTENT TYPE:", response.headers["content-type"]);
+          const chunks = [];
+          response.on("data", chunk => chunks.push(chunk));
+          response.on("end", () => resolve(Buffer.concat(chunks)));
+          response.on("error", reject);
+        }).on("error", reject);
+      }
+      doGet(imageUrl);
+    });
+
+    const base64 = imageBuffer.toString("base64");
+    res.json({ image: `data:image/jpeg;base64,${base64}` });
+
+  } catch (err) {
+    console.log("IMAGE ERROR:", err.message);
+    res.json({ error: "Image generation error: " + err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Nova AI Server running on port ${PORT}`);
-  console.log(`Endpoints:`);
-  console.log(`- GET  /          : Test`);
-  console.log(`- POST /chat      : Chat with Groq`);
-  console.log(`- POST /image     : Generate image (Pollinations.ai)`);
-  console.log(`- POST /analyze   : Analyze image (Replicate LLaVA-13b)`);
 });
