@@ -28,7 +28,7 @@ app.post("/chat", async (req, res) => {
         model: "llama-3.3-70b-versatile",
         messages,
         temperature: 0.7,
-        max_tokens: 2048
+        max_tokens: 8192
       },
       {
         headers: {
@@ -74,7 +74,7 @@ app.post("/analyze", async (req, res) => {
       },
       {
         headers: {
-          Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`,
+          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
           "Content-Type": "application/json",
           "Prefer": "wait"
         }
@@ -92,20 +92,18 @@ app.post("/analyze", async (req, res) => {
     }
 
     const pollUrl = prediction.urls?.get || `https://api.replicate.com/v1/predictions/${prediction.id}`;
-    let attempts = 0;
 
-    while (attempts < 30) {
+    while (true) {
       await new Promise(r => setTimeout(r, 2000));
-      attempts++;
 
       const pollRes = await axios.get(pollUrl, {
         headers: {
-          Authorization: `Token ${process.env.REPLICATE_API_TOKEN}`
+          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`
         }
       });
 
       const p = pollRes.data;
-      console.log(`Polling ${attempts}: ${p.status}`);
+      console.log("Polling:", p.status);
 
       if (p.status === "succeeded") {
         const reply = Array.isArray(p.output) ? p.output.join("") : p.output;
@@ -122,8 +120,6 @@ app.post("/analyze", async (req, res) => {
         });
       }
     }
-
-    res.json({ choices: [{ message: { content: "⚠️ Analysis timed out. Try again." } }] });
 
   } catch (err) {
     console.log("ANALYZE ERROR:", err.response?.data || err.message);
@@ -153,12 +149,10 @@ app.post("/image", async (req, res) => {
         if (redirectCount > 5) { reject(new Error("Too many redirects")); return; }
         https.get(url, (response) => {
           if (response.statusCode === 301 || response.statusCode === 302) {
-            console.log("Redirect →", response.headers.location);
             doGet(response.headers.location, redirectCount + 1);
             return;
           }
           console.log("Pollinations STATUS:", response.statusCode);
-          console.log("CONTENT TYPE:", response.headers["content-type"]);
           const chunks = [];
           response.on("data", chunk => chunks.push(chunk));
           response.on("end", () => resolve(Buffer.concat(chunks)));
