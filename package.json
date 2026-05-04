@@ -4,11 +4,16 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "axios": "^1.6.0"
+    "axios": "^1.6.2",  // ✅ Mise à jour vers la dernière version stable
+    "tiktoken": "^1.0.0"  // ✅ Ajouté pour compter les tokens précisément
+  },
+  "engines": {
+    "node": ">=18.0.0"  // ✅ Recommandé pour ES Modules et les dernières fonctionnalités
   }
 }
