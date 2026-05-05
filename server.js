@@ -13,14 +13,66 @@ app.get("/", (req, res) => {
   res.send("Nova AI Server OK 🚀");
 });
 
+// ── Fallback HuggingFace ────────────────────────────────────
+async function hfFallback(messages) {
+  console.log("Switching to HuggingFace fallback...");
+
+  // Convertir le tableau messages en prompt texte
+  const prompt = messages.map(m => {
+    if (m.role === "system") return `<|system|>\n${m.content}`;
+    if (m.role === "user") return `<|user|>\n${m.content}`;
+    if (m.role === "assistant") return `<|assistant|>\n${m.content}`;
+    return m.content;
+  }).join("\n") + "\n<|assistant|>\n";
+
+  const response = await axios.post(
+    "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct",
+    {
+      inputs: prompt,
+      parameters: {
+        max_new_tokens: 1024,
+        temperature: 0.7,
+        return_full_text: false
+      }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.HF_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 60000
+    }
+  );
+
+  const data = response.data;
+  console.log("HF RAW RESPONSE:", JSON.stringify(data).slice(0, 200));
+
+  // HF renvoie un tableau
+  const text = Array.isArray(data)
+    ? data[0]?.generated_text
+    : data?.generated_text;
+
+  if (!text) throw new Error("No text from HuggingFace");
+
+  // Nettoyer si le modèle répète le prompt
+  const cleaned = text.includes("<|assistant|>")
+    ? text.split("<|assistant|>").pop().trim()
+    : text.trim();
+
+  return cleaned;
+}
+
+// ── Chat (Groq + fallback HF) ───────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages } = req.body;
   console.log("GROQ_API_KEY =", process.env.GROQ_API_KEY ? "OK" : "MISSING");
+  console.log("HF_TOKEN =", process.env.HF_TOKEN ? "OK" : "MISSING");
 
   if (!messages) {
     return res.json({ choices: [{ message: { content: "No message received" } }] });
   }
 
+  // ── Essai Groq ────────────────────────────────────────────
   try {
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -39,23 +91,53 @@ app.post("/chat", async (req, res) => {
     );
 
     const data = response.data;
-    if (data.error) {
-      return res.json({ choices: [{ message: { content: "API Error: " + data.error.message } }] });
-    }
+    if (data.error) throw new Error(data.error.message);
 
     const reply = data?.choices?.[0]?.message?.content || "AI Error";
-    res.json({ choices: [{ message: { content: reply } }] });
+    console.log("Groq OK");
+    return res.json({ choices: [{ message: { content: reply } }] });
 
-  } catch (err) {
-    console.log("CHAT ERROR:", err.message);
-    res.json({ choices: [{ message: { content: "Server error: " + err.message } }] });
+  } catch (groqErr) {
+    const status = groqErr.response?.status;
+    const errMsg = groqErr.response?.data?.error?.message || groqErr.message;
+    console.log("GROQ ERROR:", status, errMsg);
+
+    // Switch HF si rate limit (429) ou quota dépassé (413, 503)
+    const shouldFallback = status === 429 || status === 413 || status === 503
+      || errMsg.toLowerCase().includes("rate limit")
+      || errMsg.toLowerCase().includes("quota")
+      || errMsg.toLowerCase().includes("limit");
+
+    if (!shouldFallback) {
+      return res.json({ choices: [{ message: { content: "⚠️ Error: " + errMsg } }] });
+    }
+
+    // ── Fallback HuggingFace ──────────────────────────────
+    try {
+      const reply = await hfFallback(messages);
+      console.log("HF fallback OK");
+      return res.json({
+        choices: [{ message: { content: reply } }],
+        fallback: true,
+        fallback_model: "meta-llama/Meta-Llama-3-8B-Instruct"
+      });
+    } catch (hfErr) {
+      console.log("HF ERROR:", hfErr.message);
+      return res.json({
+        choices: [{
+          message: {
+            content: "⚠️ Both Groq and HuggingFace are unavailable. Please try again later.\n\nGroq: " + errMsg + "\nHF: " + hfErr.message
+          }
+        }]
+      });
+    }
   }
 });
 
+// ── Analyse d'image (Groq Vision) ──────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
   console.log("GROQ VISION — question:", question);
-  console.log("GROQ_API_KEY =", process.env.GROQ_API_KEY ? "OK" : "MISSING");
 
   if (!image) {
     return res.json({ choices: [{ message: { content: "No image received" } }] });
@@ -70,10 +152,7 @@ app.post("/analyze", async (req, res) => {
           {
             role: "user",
             content: [
-              {
-                type: "image_url",
-                image_url: { url: image }
-              },
+              { type: "image_url", image_url: { url: image } },
               {
                 type: "text",
                 text: question || "Analyze this image in detail. Describe what you see, key elements, colors, context, and anything relevant."
@@ -93,7 +172,6 @@ app.post("/analyze", async (req, res) => {
     );
 
     const reply = response.data?.choices?.[0]?.message?.content || "Could not analyze image";
-    console.log("VISION REPLY:", reply.slice(0, 100));
     res.json({ choices: [{ message: { content: reply } }] });
 
   } catch (err) {
@@ -102,6 +180,7 @@ app.post("/analyze", async (req, res) => {
   }
 });
 
+// ── Génération d'image (Pollinations) ──────────────────────
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   console.log("IMAGE PROMPT =", prompt);
@@ -111,7 +190,6 @@ app.post("/image", async (req, res) => {
   try {
     const encodedPrompt = encodeURIComponent(prompt);
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
-    console.log("Pollinations URL:", imageUrl);
 
     const imageBuffer = await new Promise((resolve, reject) => {
       function doGet(url, redirectCount = 0) {
