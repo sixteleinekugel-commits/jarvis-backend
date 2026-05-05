@@ -13,11 +13,48 @@ app.get("/", (req, res) => {
   res.send("Nova AI Server OK 🚀");
 });
 
+// ── Recherche Web (Tavily) ──────────────────────────────────
+app.post("/search", async (req, res) => {
+  const { query } = req.body;
+  console.log("SEARCH QUERY =", query);
+  
+  if (!query) return res.json({ error: "No query" });
+
+  try {
+    const searchRes = await axios.post(
+      "https://api.tavily.com/search",
+      {
+        api_key: process.env.TAVILY_API_KEY,
+        query: query,
+        search_depth: "basic",
+        max_results: 5,
+        include_answer: true
+      },
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+    const data = searchRes.data;
+    
+    // Construction du contexte pour l'envoyer à l'IA si besoin
+    const context = data.results.map((r, i) => 
+      `[${i+1}] ${r.title}\n${r.content}\nSource: ${r.url}`
+    ).join("\n\n");
+
+    res.json({
+      answer: data.answer || "Voici ce que j'ai trouvé sur le web :",
+      context: context,
+      sources: data.results.map(r => ({ title: r.title, url: r.url }))
+    });
+
+  } catch (err) {
+    console.error("TAVILY ERROR:", err.response?.data || err.message);
+    res.status(500).json({ error: "Erreur lors de la recherche web" });
+  }
+});
+
 // ── Fallback HuggingFace ────────────────────────────────────
 async function hfFallback(messages) {
   console.log("Switching to HuggingFace fallback...");
-
-  // Convertir le tableau messages en prompt texte
   const prompt = messages.map(m => {
     if (m.role === "system") return `<|system|>\n${m.content}`;
     if (m.role === "user") return `<|user|>\n${m.content}`;
@@ -29,50 +66,28 @@ async function hfFallback(messages) {
     "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct",
     {
       inputs: prompt,
-      parameters: {
-        max_new_tokens: 1024,
-        temperature: 0.7,
-        return_full_text: false
-      }
+      parameters: { max_new_tokens: 1024, temperature: 0.7, return_full_text: false }
     },
     {
-      headers: {
-        Authorization: `Bearer ${process.env.HF_TOKEN}`,
-        "Content-Type": "application/json"
-      },
+      headers: { Authorization: `Bearer ${process.env.HF_TOKEN}`, "Content-Type": "application/json" },
       timeout: 60000
     }
   );
 
   const data = response.data;
-  console.log("HF RAW RESPONSE:", JSON.stringify(data).slice(0, 200));
-
-  // HF renvoie un tableau
-  const text = Array.isArray(data)
-    ? data[0]?.generated_text
-    : data?.generated_text;
-
+  const text = Array.isArray(data) ? data[0]?.generated_text : data?.generated_text;
   if (!text) throw new Error("No text from HuggingFace");
-
-  // Nettoyer si le modèle répète le prompt
-  const cleaned = text.includes("<|assistant|>")
-    ? text.split("<|assistant|>").pop().trim()
-    : text.trim();
-
-  return cleaned;
+  return text.includes("<|assistant|>") ? text.split("<|assistant|>").pop().trim() : text.trim();
 }
 
 // ── Chat (Groq + fallback HF) ───────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages } = req.body;
-  console.log("GROQ_API_KEY =", process.env.GROQ_API_KEY ? "OK" : "MISSING");
-  console.log("HF_TOKEN =", process.env.HF_TOKEN ? "OK" : "MISSING");
 
   if (!messages) {
     return res.json({ choices: [{ message: { content: "No message received" } }] });
   }
 
-  // ── Essai Groq ────────────────────────────────────────────
   try {
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -90,46 +105,22 @@ app.post("/chat", async (req, res) => {
       }
     );
 
-    const data = response.data;
-    if (data.error) throw new Error(data.error.message);
-
-    const reply = data?.choices?.[0]?.message?.content || "AI Error";
-    console.log("Groq OK");
+    const reply = response.data?.choices?.[0]?.message?.content || "AI Error";
     return res.json({ choices: [{ message: { content: reply } }] });
 
   } catch (groqErr) {
     const status = groqErr.response?.status;
     const errMsg = groqErr.response?.data?.error?.message || groqErr.message;
-    console.log("GROQ ERROR:", status, errMsg);
+    
+    const shouldFallback = status === 429 || status === 413 || status === 503 || errMsg.toLowerCase().includes("limit");
 
-    // Switch HF si rate limit (429) ou quota dépassé (413, 503)
-    const shouldFallback = status === 429 || status === 413 || status === 503
-      || errMsg.toLowerCase().includes("rate limit")
-      || errMsg.toLowerCase().includes("quota")
-      || errMsg.toLowerCase().includes("limit");
+    if (!shouldFallback) return res.json({ choices: [{ message: { content: "⚠️ Error: " + errMsg } }] });
 
-    if (!shouldFallback) {
-      return res.json({ choices: [{ message: { content: "⚠️ Error: " + errMsg } }] });
-    }
-
-    // ── Fallback HuggingFace ──────────────────────────────
     try {
       const reply = await hfFallback(messages);
-      console.log("HF fallback OK");
-      return res.json({
-        choices: [{ message: { content: reply } }],
-        fallback: true,
-        fallback_model: "meta-llama/Meta-Llama-3-8B-Instruct"
-      });
+      return res.json({ choices: [{ message: { content: reply } }], fallback: true });
     } catch (hfErr) {
-      console.log("HF ERROR:", hfErr.message);
-      return res.json({
-        choices: [{
-          message: {
-            content: "⚠️ Both Groq and HuggingFace are unavailable. Please try again later.\n\nGroq: " + errMsg + "\nHF: " + hfErr.message
-          }
-        }]
-      });
+      return res.json({ choices: [{ message: { content: "⚠️ Services indisponibles." } }] });
     }
   }
 });
@@ -137,84 +128,44 @@ app.post("/chat", async (req, res) => {
 // ── Analyse d'image (Groq Vision) ──────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
-  console.log("GROQ VISION — question:", question);
-
-  if (!image) {
-    return res.json({ choices: [{ message: { content: "No image received" } }] });
-  }
+  if (!image) return res.json({ error: "No image received" });
 
   try {
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        model: "llama-3.2-11b-vision-preview", // Modèle vision stable
         messages: [
           {
             role: "user",
             content: [
               { type: "image_url", image_url: { url: image } },
-              {
-                type: "text",
-                text: question || "Analyze this image in detail. Describe what you see, key elements, colors, context, and anything relevant."
-              }
+              { type: "text", text: question || "Analyze this image." }
             ]
           }
-        ],
-        max_tokens: 2048,
-        temperature: 0.7
+        ]
       },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
-
-    const reply = response.data?.choices?.[0]?.message?.content || "Could not analyze image";
-    res.json({ choices: [{ message: { content: reply } }] });
-
+    res.json({ choices: [{ message: { content: response.data.choices[0].message.content } }] });
   } catch (err) {
-    console.log("ANALYZE ERROR:", err.response?.data || err.message);
-    res.json({ choices: [{ message: { content: "⚠️ Analysis error: " + err.message } }] });
+    res.json({ error: err.message });
   }
 });
 
 // ── Génération d'image (Pollinations) ──────────────────────
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
-  console.log("IMAGE PROMPT =", prompt);
-
-  if (!prompt) return res.json({ error: "No prompt received" });
+  if (!prompt) return res.json({ error: "No prompt" });
 
   try {
     const encodedPrompt = encodeURIComponent(prompt);
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
-
-    const imageBuffer = await new Promise((resolve, reject) => {
-      function doGet(url, redirectCount = 0) {
-        if (redirectCount > 5) { reject(new Error("Too many redirects")); return; }
-        https.get(url, (response) => {
-          if (response.statusCode === 301 || response.statusCode === 302) {
-            doGet(response.headers.location, redirectCount + 1);
-            return;
-          }
-          console.log("Pollinations STATUS:", response.statusCode);
-          const chunks = [];
-          response.on("data", chunk => chunks.push(chunk));
-          response.on("end", () => resolve(Buffer.concat(chunks)));
-          response.on("error", reject);
-        }).on("error", reject);
-      }
-      doGet(imageUrl);
-    });
-
-    const base64 = imageBuffer.toString("base64");
-    res.json({ image: `data:image/jpeg;base64,${base64}` });
-
+    
+    // On peut renvoyer directement l'URL ou le base64 comme avant
+    res.json({ image: imageUrl }); 
   } catch (err) {
-    console.log("IMAGE ERROR:", err.message);
-    res.json({ error: "Image generation error: " + err.message });
+    res.json({ error: err.message });
   }
 });
 
