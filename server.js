@@ -80,7 +80,7 @@ app.post("/chat", async (req, res) => {
         model: "llama-3.3-70b-versatile",
         messages,
         temperature: 0.7,
-        max_tokens: 8192
+        max_tokens: 2048
       },
       {
         headers: {
