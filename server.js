@@ -69,7 +69,6 @@ app.post("/analyze", async (req, res) => {
     return res.json({ choices: [{ message: { content: "No image received" } }] });
   }
 
-  // Essaie chaque modèle vision jusqu'à ce qu'un fonctionne
   for (const model of VISION_MODELS) {
     try {
       console.log(`Trying vision model: ${model}`);
@@ -110,12 +109,10 @@ app.post("/analyze", async (req, res) => {
     } catch (err) {
       const errMsg = err.response?.data?.error?.message || err.message;
       console.log(`Model ${model} failed:`, errMsg);
-      // Passe au modèle suivant
       continue;
     }
   }
 
-  // Tous les modèles ont échoué
   res.json({ choices: [{ message: { content: "⚠️ Image analysis unavailable. Please enable a vision model at console.groq.com/settings/project/limits" } }] });
 });
 
@@ -153,6 +150,60 @@ app.post("/image", async (req, res) => {
   } catch (err) {
     console.log("IMAGE ERROR:", err.message);
     res.json({ error: "Image generation error: " + err.message });
+  }
+});
+
+// ✅ NOUVEL ENDPOINT: Génération de vidéo avec Pollinations (sans clé API)
+app.post("/video", async (req, res) => {
+  const { prompt, imageUrl } = req.body;
+  console.log("VIDEO PROMPT =", prompt);
+  console.log("IMAGE URL =", imageUrl || "None");
+
+  if (!prompt) {
+    return res.json({ error: "No prompt received" });
+  }
+
+  try {
+    // Construit l'URL pour Pollinations
+    let videoUrl;
+    if (imageUrl) {
+      // Génère une vidéo à partir d'une image + prompt
+      videoUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=512&nologo=true&model=flux&video=true&image_url=${encodeURIComponent(imageUrl)}`;
+    } else {
+      // Génère une vidéo à partir d'un prompt texte
+      videoUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=512&nologo=true&model=flux&video=true`;
+    }
+
+    console.log("Pollinations Video URL:", videoUrl);
+
+    // Télécharge la vidéo et la renvoie en base64
+    const videoBuffer = await new Promise((resolve, reject) => {
+      function doGet(url, redirectCount = 0) {
+        if (redirectCount > 5) { reject(new Error("Too many redirects")); return; }
+        https.get(url, (response) => {
+          if (response.statusCode === 301 || response.statusCode === 302) {
+            doGet(response.headers.location, redirectCount + 1);
+            return;
+          }
+          console.log("Pollinations Video STATUS:", response.statusCode);
+          const chunks = [];
+          response.on("data", chunk => chunks.push(chunk));
+          response.on("end", () => resolve(Buffer.concat(chunks)));
+          response.on("error", reject);
+        }).on("error", reject);
+      }
+      doGet(videoUrl);
+    });
+
+    const base64 = videoBuffer.toString("base64");
+    res.json({
+      video: `data:video/mp4;base64,${base64}`,
+      url: videoUrl
+    });
+
+  } catch (err) {
+    console.log("VIDEO ERROR:", err.message);
+    res.json({ error: "Video generation error: " + err.message });
   }
 });
 
