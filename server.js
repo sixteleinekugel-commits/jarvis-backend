@@ -173,34 +173,62 @@ app.post("/image", async (req, res) => {
 
 // ── Search (Tavily) ───────────────────────────────────────────
 app.post("/search", async (req, res) => {
-    const data = searchRes.data;
+  const { query } = req.body;
 
-    const context = data.results?.map((r, i) =>
-      `[${i+1}] ${r.title}\n${r.content ? r.content.slice(0, 450) : ''}\nSource: ${r.url}`
-    ).join("\n\n") || "No results found.";
+  console.log("🔍 SEARCH QUERY =", query);
+
+  if (!query || typeof query !== "string" || query.trim() === "") {
+    return res.status(400).json({ error: "Query is required" });
+  }
+
+  if (!process.env.TAVILY_API_KEY) {
+    console.error("❌ TAVILY_API_KEY MANQUANTE");
+    return res.status(500).json({ error: "Search service not configured on server" });
+  }
+
+  try {
+    const response = await axios.post(
+      "https://api.tavily.com/search",
+      {
+        api_key: process.env.TAVILY_API_KEY,
+        query: query.trim(),
+        search_depth: "basic",
+        max_results: 5,
+        include_answer: true
+      },
+      {
+        timeout: 12000
+      }
+    );
+
+    const data = response.data;
+
+    console.log("✅ TAVILY RESPONSE OK");
 
     res.json({
       answer: data.answer || "",
-      context,
-      sources: data.results?.map(r => ({ 
-        title: r.title || "No title", 
-        url: r.url 
-      })) || []
+      context: data.results
+        ? data.results.map((r, i) =>
+            `[${i + 1}] ${r.title}\n${r.content?.slice(0, 400) || ""}\nSource: ${r.url}`
+          ).join("\n\n")
+        : "No results found.",
+      sources: data.results
+        ? data.results.map(r => ({
+            title: r.title,
+            url: r.url
+          }))
+        : []
     });
 
-  } catch (err) {
-    console.error("Tavily Search Error:", err.response?.data || err.message);
-    
-    if (err.response?.status === 429) {
-      return res.status(429).json({ error: "Search rate limit reached" });
-    }
+  } catch (error) {
+    console.error("❌ TAVILY ERROR FULL:", error.response?.data || error.message);
 
-    res.status(500).json({ 
-      error: "Search failed. Please try again later." 
+    res.status(500).json({
+      error: "Search failed",
+      detail: error.response?.data || error.message
     });
   }
 });
-
 // ── Email Confirmation ────────────────────────────────────────
 app.post("/send-confirmation", async (req, res) => {
   const { email, name } = req.body;
