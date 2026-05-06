@@ -173,30 +173,6 @@ app.post("/image", async (req, res) => {
 
 // ── Search (Tavily) ───────────────────────────────────────────
 app.post("/search", async (req, res) => {
-  const { query } = req.body;
-
-  if (!query || typeof query !== "string" || query.trim() === "") {
-    return res.status(400).json({ error: "Valid query is required" });
-  }
-
-  if (!process.env.TAVILY_API_KEY) {
-    console.error("TAVILY_API_KEY is missing!");
-    return res.status(500).json({ error: "Search service not configured" });
-  }
-
-  try {
-    const searchRes = await axios.post(
-      "https://api.tavily.com/search",
-      {
-        api_key: process.env.TAVILY_API_KEY,
-        query: query.trim(),
-        search_depth: "basic",
-        max_results: 6,
-        include_answer: true
-      },
-      { timeout: 15000 }
-    );
-
     const data = searchRes.data;
 
     const context = data.results?.map((r, i) =>
