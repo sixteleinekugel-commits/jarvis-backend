@@ -30,7 +30,6 @@ app.post("/chat", async (req, res) => {
   const { messages, model } = req.body;
   if (!messages) return res.json({ choices: [{ message: { content: "No message received" } }] });
 
-  // Modèle demandé explicitement (après switch utilisateur)
   const validModels = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
   const selectedModel = validModels.includes(model) ? model : "openai/gpt-oss-120b";
 
@@ -65,7 +64,6 @@ app.post("/chat", async (req, res) => {
     const errMsg = err.response?.data?.error?.message || err.message;
     console.log("GROQ ERROR:", status, errMsg);
 
-    // Rate limit atteint → signaler au frontend de switcher
     const isRateLimit = status === 429
       || errMsg.toLowerCase().includes("rate limit")
       || errMsg.toLowerCase().includes("quota")
@@ -152,21 +150,65 @@ app.post("/image", async (req, res) => {
   }
 });
 
-// ── Search (Tavily) ──────────────────────────────────────────
+// ✅ ENDPOINT /SEARCH CORRIGÉ POUR TAVILY
 app.post("/search", async (req, res) => {
   const { query } = req.body;
-  if (!query) return res.json({ error: "No query" });
+  if (!query) return res.json({ error: "No query provided" });
+
+  // ✅ Vérifie que la clé API Tavily est configurée
+  if (!process.env.TAVILY_API_KEY) {
+    return res.json({
+      error: "Search is unavailable. Tavily API key not configured."
+    });
+  }
+
   try {
+    // ✅ Requête à Tavily avec la clé API dans les headers
     const searchRes = await axios.post(
       "https://api.tavily.com/search",
-      { api_key: process.env.TAVILY_API_KEY, query, search_depth: "basic", max_results: 5, include_answer: true },
-      { headers: { "Content-Type": "application/json" } }
+      {
+        query,
+        search_depth: "basic",
+        max_results: 5,
+        include_answer: true,
+        include_raw_content: false
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-KEY": process.env.TAVILY_API_KEY  // ✅ Clé API dans les headers
+        },
+        timeout: 10000  // ✅ Timeout de 10 secondes
+      }
     );
+
     const data = searchRes.data;
-    const context = data.results.map((r, i) => `[${i+1}] ${r.title}\n${r.content}\nSource: ${r.url}`).join("\n\n");
-    res.json({ answer: data.answer || "", context, sources: data.results.map(r => ({ title: r.title, url: r.url })) });
+
+    // ✅ Vérifie que data et data.results existent
+    if (!data || !data.results) {
+      throw new Error("Invalid response from Tavily API: missing results");
+    }
+
+    // ✅ Construit le contexte pour l'AI
+    const context = data.results
+      .map((r, i) => `[${i + 1}] ${r.title || "No title"}\n${r.content || "No content"}\nSource: ${r.url || "No URL"}`)
+      .join("\n\n");
+
+    // ✅ Retourne les données
+    res.json({
+      answer: data.answer || "",
+      context,
+      sources: data.results.map(r => ({
+        title: r.title || "No title",
+        url: r.url || "No URL"
+      }))
+    });
+
   } catch (err) {
-    res.json({ error: "Search error: " + err.message });
+    console.log("TAVILY ERROR:", err.response?.data || err.message);
+    res.json({
+      error: "Search error: " + (err.response?.data?.message || err.message)
+    });
   }
 });
 
