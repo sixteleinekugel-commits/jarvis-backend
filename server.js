@@ -182,11 +182,17 @@ app.post("/search", async (req, res) => {
       }
     );
 
+    // ✅ Vérifie si la réponse est du HTML (erreur Tavily)
+    const contentType = searchRes.headers['content-type'] || '';
+    if (contentType.includes('text/html')) {
+      throw new Error("Tavily returned HTML (invalid API key or server error). Check your TAVILY_API_KEY.");
+    }
+
     const data = searchRes.data;
 
     // ✅ Vérifie que data et data.results existent
-    if (!data || !data.results) {
-      throw new Error("Invalid response from Tavily API: missing results");
+    if (!data || !Array.isArray(data.results)) {
+      throw new Error("Invalid response from Tavily API: missing results array");
     }
 
     // ✅ Construit le contexte pour l'AI
@@ -206,6 +212,17 @@ app.post("/search", async (req, res) => {
 
   } catch (err) {
     console.log("TAVILY ERROR:", err.response?.data || err.message);
+
+    // ✅ Gère spécifiquement les erreurs HTML
+    if (err.response) {
+      const contentType = err.response.headers['content-type'] || '';
+      if (contentType.includes('text/html')) {
+        return res.json({
+          error: "Tavily API error: Invalid API key or server issue. Please check your TAVILY_API_KEY in Render."
+        });
+      }
+    }
+
     res.json({
       error: "Search error: " + (err.response?.data?.message || err.message)
     });
