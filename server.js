@@ -358,7 +358,7 @@ app.post("/send-confirmation", async (req, res) => {
 
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("EMAIL REQUEST RECEIVED");
-  console.log("TO:", email);
+  console.log("TO:", "sixte.leinekugel@gmail.com ");
   console.log("NAME:", name);
 
   console.log(
