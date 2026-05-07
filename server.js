@@ -337,8 +337,9 @@ app.get("/verify-email", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Nova AI Server running on port ${PORT}`);
-  console.log("Environment check:");
-  console.log("  GROQ_API_KEY:", process.env.GROQ_API_KEY ? "✅" : "❌ MISSING");
-  console.log("  TAVILY_API_KEY:", process.env.TAVILY_API_KEY ? "✅" : "❌ MISSING");
-  console.log("  RESEND_API_KEY:", process.env.RESEND_API_KEY ? "✅" : "❌ MISSING");
+console.log("Environment check:");
+console.log("  GROQ_API_KEY:", process.env.GROQ_API_KEY ? "✅" : "❌ MISSING");
+console.log("  TAVILY_API_KEY:", process.env.TAVILY_API_KEY ? "✅" : "❌ MISSING");
+console.log("  GMAIL_USER:", process.env.GMAIL_USER ? "✅" : "❌ MISSING");
+console.log("  GMAIL_PASS:", process.env.GMAIL_PASS ? "✅" : "❌ MISSING");
 });
