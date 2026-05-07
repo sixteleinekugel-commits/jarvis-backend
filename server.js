@@ -395,13 +395,15 @@ app.post("/send-confirmation", async (req, res) => {
 
     console.log("CREATING SMTP TRANSPORT...");
 
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_PASS
-      }
-    });
+   const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_PASS
+  }
+});
 
     console.log("VERIFYING SMTP CONNECTION...");
 
