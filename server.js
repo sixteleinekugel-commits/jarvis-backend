@@ -314,19 +314,6 @@ app.post("/send-confirmation", async (req, res) => {
   }
 });
 
-    console.log("EMAIL SENT — id:", emailResult?.data?.id, "error:", emailResult?.error);
-
-    if (emailResult?.error) {
-      throw new Error(emailResult.error.message || JSON.stringify(emailResult.error));
-    }
-
-    return res.json({ success: true, email_id: emailResult?.data?.id });
-
-  } catch (err) {
-    console.log("EMAIL ERROR:", err.message);
-    return res.json({ success: false, error: err.message });
-  }
-});
 
 // ── VERIFY EMAIL TOKEN ────────────────────────────────────────
 app.get("/verify-email", (req, res) => {
