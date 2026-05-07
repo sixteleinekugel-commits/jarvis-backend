@@ -3,6 +3,7 @@ import cors from "cors";
 import axios from "axios";
 import https from "https";
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 
 const app = express();
 app.use(cors());
@@ -237,17 +238,17 @@ app.post("/search", async (req, res) => {
   }
 });
 
-// ── SEND CONFIRMATION EMAIL ───────────────────────────────────
+// ── SEND CONFIRMATION EMAIL (Gmail SMTP) ──────────────────────
 app.post("/send-confirmation", async (req, res) => {
   const { email, name } = req.body;
-  console.log("SEND-CONFIRMATION — to:", email, "name:", name);
-  console.log("RESEND_API_KEY =", process.env.RESEND_API_KEY ? "OK" : "MISSING");
+  console.log("SEND-CONFIRMATION — to:", email);
+  console.log("GMAIL_USER =", process.env.GMAIL_USER ? "OK" : "MISSING");
+  console.log("GMAIL_PASS =", process.env.GMAIL_PASS ? "OK" : "MISSING");
 
   if (!email || !name) {
     return res.json({ success: false, error: "Missing email or name" });
   }
 
-  // Créer le token dans tous les cas
   const token = crypto.randomBytes(32).toString("hex");
   pendingTokens.set(token, {
     email,
@@ -257,24 +258,25 @@ app.post("/send-confirmation", async (req, res) => {
   const confirmLink = `${FRONTEND_URL}?confirm=${token}`;
   console.log("CONFIRMATION LINK:", confirmLink);
 
-  // Si pas de clé Resend → auto-confirmer (mode dev)
-  if (!process.env.RESEND_API_KEY) {
-    console.log("No RESEND_API_KEY — auto-confirming account");
-    // Marquer comme vérifié directement
+  // Si pas de config Gmail → auto-confirm
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+    console.log("No Gmail config — auto-confirming");
     pendingTokens.delete(token);
-    return res.json({ success: true, auto_confirmed: true, message: "No email service configured — account auto-confirmed" });
+    return res.json({ success: true, auto_confirmed: true });
   }
 
   try {
-    // Import dynamique de Resend pour éviter l'erreur si pas installé
-    const { Resend } = await import("resend");
-    const resend = new Resend(process.env.RESEND_API_KEY);
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_PASS
+      }
+    });
 
-    const emailResult = await resend.emails.send({
-      // IMPORTANT: utilise onboarding@resend.dev pour les tests
-      // Pour envoyer à tous → vérifie un domaine sur resend.com
-      from: "Nova AI 618 <onboarding@resend.dev>",
-      to: [email],
+    await transporter.sendMail({
+      from: `"Nova AI 618" <${process.env.GMAIL_USER}>`,
+      to: email,
       subject: "✅ Confirm your Nova AI 618 account",
       html: `<!DOCTYPE html>
 <html><body style="margin:0;padding:0;background:#050608;font-family:'Segoe UI',sans-serif">
@@ -291,17 +293,26 @@ app.post("/send-confirmation", async (req, res) => {
     </p>
     <div style="text-align:center;margin-bottom:28px">
       <a href="${confirmLink}"
-         style="display:inline-block;background:linear-gradient(135deg,#7c6aff,#5b4cd1);color:#fff;text-decoration:none;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:600;letter-spacing:0.02em">
+         style="display:inline-block;background:linear-gradient(135deg,#7c6aff,#5b4cd1);color:#fff;text-decoration:none;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:600">
         ✅ Confirm my account
       </a>
     </div>
     <p style="color:#3e3e55;font-size:12px;text-align:center;margin:0">
-      This link expires in 24 hours. If you didn't create an account, you can ignore this email.
+      This link expires in 24 hours. If you didn't create this account, ignore this email.
     </p>
   </div>
 </div>
 </body></html>`
     });
+
+    console.log("EMAIL SENT via Gmail to:", email);
+    return res.json({ success: true });
+
+  } catch (err) {
+    console.log("GMAIL ERROR:", err.message);
+    return res.json({ success: false, error: err.message });
+  }
+});
 
     console.log("EMAIL SENT — id:", emailResult?.data?.id, "error:", emailResult?.error);
 
