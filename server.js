@@ -25,7 +25,7 @@ app.get("/", (req, res) => {
   res.send("🚀 Nova AI 618 Server is Online");
 });
 
-// ── Chat ─────────────────────────────────────────────────────
+// ── Chat (Groq) ─────────────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages, model } = req.body;
   if (!messages) return res.status(400).json({ error: "Messages required" });
@@ -39,12 +39,45 @@ app.post("/chat", async (req, res) => {
       { model: selectedModel, messages, temperature: 0.7, max_tokens: 2048 },
       { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
-
     res.json(response.data);
   } catch (err) {
     console.error("Groq Error:", err.response?.data || err.message);
     if (err.response?.status === 429) return res.status(429).json({ rate_limited: true });
     res.status(500).json({ error: "AI error" });
+  }
+});
+
+// ── Code Mode (Laguna M.1 via OpenRouter) ───────────────────────────
+app.post("/code", async (req, res) => {
+  const { messages } = req.body;
+  if (!messages) return res.status(400).json({ error: "Messages required" });
+
+  if (!process.env.OPENROUTER_API_KEY) {
+    return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
+  }
+
+  try {
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "lagunaai/laguna-m1-instruct",   // Modèle Laguna M.1
+        messages: messages,
+        temperature: 0.7,
+        max_tokens: 4096
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": FRONTEND_URL,        // Recommandé par OpenRouter
+          "X-Title": "Nova AI 618"
+        }
+      }
+    );
+
+    res.json(response.data);
+  } catch (err) {
+    console.error("OpenRouter Error:", err.response?.data || err.message);
+    res.status(500).json({ error: "Code model error" });
   }
 });
 
@@ -69,7 +102,7 @@ app.post("/search", async (req, res) => {
     const data = r.data;
     res.json({
       answer: data.answer || "",
-      context: data.results?.map((r, i) => 
+      context: data.results?.map((r, i) =>
         `[${i+1}] ${r.title}\n${(r.content || "").slice(0, 450)}\nSource: ${r.url}`
       ).join("\n\n") || "",
       sources: data.results?.map(r => ({ title: r.title, url: r.url })) || []
@@ -135,7 +168,7 @@ app.post("/analyze", async (req, res) => {
   res.status(500).json({ error: "Image analysis unavailable" });
 });
 
-// ── SEND CONFIRMATION (pour EmailJS) ─────────────────────────
+// ── SEND CONFIRMATION (EmailJS) ───────────────────────────────
 app.post("/send-confirmation", (req, res) => {
   const { email, name } = req.body;
   if (!email || !name) return res.status(400).json({ success: false, error: "Missing email or name" });
@@ -149,13 +182,9 @@ app.post("/send-confirmation", (req, res) => {
   });
 
   const confirmLink = `${FRONTEND_URL}?confirm=${token}`;
-
   console.log(`Token created for ${email} → ${confirmLink}`);
 
-  res.json({ 
-    success: true, 
-    confirmLink 
-  });
+  res.json({ success: true, confirmLink });
 });
 
 // ── VERIFY EMAIL ─────────────────────────────────────────────
@@ -176,4 +205,5 @@ app.get("/verify-email", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Nova AI 618 Server running on port ${PORT}`);
+  console.log("OPENROUTER_API_KEY:", process.env.OPENROUTER_API_KEY ? "✅" : "❌ MISSING");
 });
