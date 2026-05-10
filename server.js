@@ -3,6 +3,7 @@ import cors from "cors";
 import axios from "axios";
 import https from "https";
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 
 const app = express();
 
@@ -12,76 +13,115 @@ app.use(express.json({ limit: "20mb" }));
 const PORT = process.env.PORT || 10000;
 const FRONTEND_URL = "https://sixteleinekugel-commits.github.io/novaAI-chat";
 
+// ─── Token store en mémoire (reset au redémarrage du serveur)
 const pendingTokens = new Map();
 
+// ─── Modèles vision pour /analyze
 const VISION_MODELS = [
   "llama-3.2-90b-vision-preview",
   "llama-3.2-11b-vision-preview",
   "llava-v1.5-7b-4096-preview"
 ];
 
-// ====================== ROUTES ======================
+// ═══════════════════════════════════════════════════════════
+//  NODEMAILER — Transporter Gmail
+//  Variables d'env requises : GMAIL_USER, GMAIL_APP_PASSWORD
+// ═══════════════════════════════════════════════════════════
+function createTransporter() {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    console.warn("⚠️  GMAIL_USER ou GMAIL_APP_PASSWORD non configuré — emails désactivés");
+    return null;
+  }
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.GMAIL_USER,        // ex: ainova618@gmail.com
+      pass: process.env.GMAIL_APP_PASSWORD // mot de passe d'application Google (16 car.)
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ROUTES
+// ═══════════════════════════════════════════════════════════
+
 app.get("/", (req, res) => {
-  res.send("🚀 Nova AI 618 Server is Online");
+  res.send("🚀 Nova AI 618 Server is Online — /chat /code /search /image /analyze /send-confirmation /verify-email");
 });
 
-// ── Chat (Groq) ─────────────────────────────────────────────────────
+// ── /chat  — Groq (GPT-OSS 120B, Llama 70B, Llama 8B) ──────
 app.post("/chat", async (req, res) => {
   const { messages, model } = req.body;
   if (!messages) return res.status(400).json({ error: "Messages required" });
 
-  const validModels = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+  const validModels = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant"
+  ];
   const selectedModel = validModels.includes(model) ? model : "openai/gpt-oss-120b";
 
   try {
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
-      { model: selectedModel, messages, temperature: 0.7, max_tokens: 2048 },
-      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
+      {
+        model: selectedModel,
+        messages,
+        temperature: 0.7,
+        max_tokens: 2048
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+        timeout: 30000
+      }
     );
     res.json(response.data);
   } catch (err) {
-    console.error("Groq Error:", err.response?.data || err.message);
+    console.error("Groq /chat error:", err.response?.data || err.message);
     if (err.response?.status === 429) return res.status(429).json({ rate_limited: true });
     res.status(500).json({ error: "AI error" });
   }
 });
 
-// ── Code Mode (Laguna M.1 via OpenRouter) ───────────────────────────
+// ── /code  — OpenRouter (Laguna M.1 Instruct) ───────────────
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
   if (!messages) return res.status(400).json({ error: "Messages required" });
 
   if (!process.env.OPENROUTER_API_KEY) {
-    return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
+    return res.status(500).json({ error: "OPENROUTER_API_KEY not configured on server" });
   }
 
   try {
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "lagunaai/laguna-m1-instruct",   // Modèle Laguna M.1
-        messages: messages,
-        temperature: 0.7,
+        model: "laguna/laguna-m.1-instruct",
+        messages,
+        temperature: 0.2,      // faible temp pour du code précis
         max_tokens: 4096
       },
       {
         headers: {
-          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "HTTP-Referer": FRONTEND_URL,        // Recommandé par OpenRouter
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          // Headers recommandés par OpenRouter
+          "HTTP-Referer": FRONTEND_URL,
           "X-Title": "Nova AI 618"
-        }
+        },
+        timeout: 60000
       }
     );
-
     res.json(response.data);
   } catch (err) {
-    console.error("OpenRouter Error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Code model error" });
+    console.error("OpenRouter /code error:", err.response?.data || err.message);
+    if (err.response?.status === 429) return res.status(429).json({ error: "Rate limit OpenRouter", rate_limited: true });
+    if (err.response?.status === 402) return res.status(402).json({ error: "OpenRouter credits exhausted" });
+    res.status(500).json({ error: "Code AI error: " + (err.response?.data?.error?.message || err.message) });
   }
 });
 
-// ── Search ───────────────────────────────────────────────────
+// ── /search  — Tavily ────────────────────────────────────────
 app.post("/search", async (req, res) => {
   const { query } = req.body;
   if (!query) return res.status(400).json({ error: "Query required" });
@@ -91,29 +131,32 @@ app.post("/search", async (req, res) => {
   }
 
   try {
-    const r = await axios.post("https://api.tavily.com/search", {
-      api_key: process.env.TAVILY_API_KEY,
-      query: query.trim(),
-      search_depth: "basic",
-      max_results: 5,
-      include_answer: true
-    });
-
+    const r = await axios.post(
+      "https://api.tavily.com/search",
+      {
+        api_key: process.env.TAVILY_API_KEY,
+        query: query.trim(),
+        search_depth: "basic",
+        max_results: 5,
+        include_answer: true
+      },
+      { timeout: 15000 }
+    );
     const data = r.data;
     res.json({
       answer: data.answer || "",
       context: data.results?.map((r, i) =>
-        `[${i+1}] ${r.title}\n${(r.content || "").slice(0, 450)}\nSource: ${r.url}`
+        `[${i + 1}] ${r.title}\n${(r.content || "").slice(0, 450)}\nSource: ${r.url}`
       ).join("\n\n") || "",
       sources: data.results?.map(r => ({ title: r.title, url: r.url })) || []
     });
   } catch (err) {
-    console.error("Search Error:", err.message);
+    console.error("Tavily /search error:", err.message);
     res.status(500).json({ error: "Search failed" });
   }
 });
 
-// ── Image ─────────────────────────────────────────────────────
+// ── /image  — Pollinations.ai ────────────────────────────────
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "Prompt required" });
@@ -127,16 +170,18 @@ app.post("/image", async (req, res) => {
         const chunks = [];
         response.on("data", c => chunks.push(c));
         response.on("end", () => resolve(Buffer.concat(chunks)));
+        response.on("error", reject);
       }).on("error", reject);
     });
 
     res.json({ image: `data:image/jpeg;base64,${buf.toString("base64")}` });
   } catch (err) {
+    console.error("Pollinations /image error:", err.message);
     res.status(500).json({ error: "Image generation failed" });
   }
 });
 
-// ── Analyze ───────────────────────────────────────────────────
+// ── /analyze  — Groq Vision ──────────────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
   if (!image) return res.status(400).json({ error: "Image required" });
@@ -157,43 +202,127 @@ app.post("/analyze", async (req, res) => {
           max_tokens: 1024,
           temperature: 0.7
         },
-        { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
+        {
+          headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+          timeout: 30000
+        }
       );
       const reply = response.data?.choices?.[0]?.message?.content;
       if (reply) return res.json({ choices: [{ message: { content: reply } }] });
     } catch (err) {
-      console.log(`Vision model ${model} failed`);
+      console.log(`Vision model ${model} failed:`, err.response?.data?.error?.message || err.message);
     }
   }
-  res.status(500).json({ error: "Image analysis unavailable" });
+  res.status(500).json({ error: "Image analysis unavailable — all vision models failed" });
 });
 
-// ── SEND CONFIRMATION (EmailJS) ───────────────────────────────
-app.post("/send-confirmation", (req, res) => {
+// ═══════════════════════════════════════════════════════════
+//  SEND CONFIRMATION  — génère le token + envoie l'email
+//  via Nodemailer (Gmail) directement depuis le serveur.
+//  Plus besoin d'EmailJS côté frontend !
+// ═══════════════════════════════════════════════════════════
+app.post("/send-confirmation", async (req, res) => {
   const { email, name } = req.body;
-  if (!email || !name) return res.status(400).json({ success: false, error: "Missing email or name" });
+  if (!email || !name) {
+    return res.status(400).json({ success: false, error: "Missing email or name" });
+  }
 
+  // 1. Générer le token
   const token = crypto.randomBytes(32).toString("hex");
-  
   pendingTokens.set(token, {
     email: email.toLowerCase().trim(),
     name,
-    expires: Date.now() + 24 * 60 * 60 * 1000
+    expires: Date.now() + 24 * 60 * 60 * 1000   // 24h
   });
-
   const confirmLink = `${FRONTEND_URL}?confirm=${token}`;
-  console.log(`Token created for ${email} → ${confirmLink}`);
+  console.log(`✅ Token created for ${email} → ${confirmLink}`);
 
-  res.json({ success: true, confirmLink });
+  // 2. Tentative d'envoi d'email via Nodemailer
+  const transporter = createTransporter();
+
+  if (!transporter) {
+    // Pas de config Gmail → on renvoie quand même le lien (mode dev)
+    console.warn("📧 Email non envoyé (pas de config Gmail) — lien:", confirmLink);
+    return res.json({ success: true, confirmLink, emailSent: false });
+  }
+
+  const mailOptions = {
+    from: `"Nova AI 618" <${process.env.GMAIL_USER}>`,
+    to: email,
+    subject: "✅ Confirm your Nova AI 618 account",
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: 'Segoe UI', Arial, sans-serif; background: #050608; color: #ebebf2; margin: 0; padding: 0; }
+          .container { max-width: 520px; margin: 40px auto; background: #0b0c12; border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; overflow: hidden; }
+          .header { background: linear-gradient(135deg, #0d0a1e, #070512); padding: 36px 32px; text-align: center; border-bottom: 1px solid rgba(124,106,255,0.2); }
+          .logo-text { font-size: 26px; font-weight: 800; color: #ebebf2; letter-spacing: -0.5px; }
+          .logo-text em { color: #7c6aff; font-style: normal; }
+          .body { padding: 32px; }
+          .greeting { font-size: 17px; font-weight: 600; margin-bottom: 12px; }
+          .text { color: #7a7a9a; font-size: 14px; line-height: 1.7; margin-bottom: 28px; }
+          .btn { display: inline-block; background: #7c6aff; color: #ffffff !important; text-decoration: none; padding: 14px 32px; border-radius: 10px; font-weight: 700; font-size: 14px; letter-spacing: 0.02em; }
+          .btn:hover { background: #a08aff; }
+          .link-box { margin-top: 22px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px 14px; font-size: 12px; color: #3e3e55; word-break: break-all; }
+          .link-box a { color: #7c6aff; }
+          .footer { padding: 18px 32px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 11px; color: #3e3e55; text-align: center; }
+          .expire { background: rgba(255,140,0,0.08); border: 1px solid rgba(255,140,0,0.2); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: rgba(255,140,0,0.85); margin-top: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo-text">NOVA <em>AI 618</em></div>
+            <div style="color:#7a7a9a;font-size:13px;margin-top:6px;font-weight:300">Created by Sixte · Intelligence redefined</div>
+          </div>
+          <div class="body">
+            <div class="greeting">Hello ${name} 👋</div>
+            <div class="text">
+              Welcome to <strong style="color:#ebebf2">Nova AI 618</strong>! You're one click away from unlocking your account — including <strong style="color:#7c6aff">Code Mode</strong> powered by Laguna M.1.
+            </div>
+            <div style="text-align:center">
+              <a href="${confirmLink}" class="btn">✅ Confirm my account</a>
+            </div>
+            <div class="expire">⏰ This link expires in <strong>24 hours</strong>.</div>
+            <div class="link-box">
+              If the button doesn't work, copy this link:<br>
+              <a href="${confirmLink}">${confirmLink}</a>
+            </div>
+          </div>
+          <div class="footer">
+            Nova AI 618 · Created by Sixte Leinekugel<br>
+            If you didn't create an account, ignore this email.
+          </div>
+        </div>
+      </body>
+      </html>
+    `,
+    // Version texte brut (fallback)
+    text: `Hello ${name},\n\nConfirm your Nova AI 618 account:\n${confirmLink}\n\nThis link expires in 24 hours.\n\n— Nova AI 618 by Sixte`
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`📧 Confirmation email sent to ${email}`);
+    res.json({ success: true, confirmLink, emailSent: true });
+  } catch (err) {
+    console.error("❌ Nodemailer error:", err.message);
+    // On renvoie quand même success:true car le token est créé
+    // Le frontend pourra sign-in directement
+    res.json({ success: true, confirmLink, emailSent: false, emailError: err.message });
+  }
 });
 
-// ── VERIFY EMAIL ─────────────────────────────────────────────
+// ── /verify-email  — vérifie le token ───────────────────────
 app.get("/verify-email", (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ success: false, error: "No token" });
 
   const data = pendingTokens.get(token);
-  if (!data) return res.status(400).json({ success: false, error: "Invalid token" });
+  if (!data) return res.status(400).json({ success: false, error: "Invalid or already used token" });
   if (Date.now() > data.expires) {
     pendingTokens.delete(token);
     return res.status(400).json({ success: false, error: "Token expired" });
@@ -203,7 +332,12 @@ app.get("/verify-email", (req, res) => {
   res.json({ success: true, email: data.email, name: data.name });
 });
 
+// ── Démarrage ────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Nova AI 618 Server running on port ${PORT}`);
-  console.log("OPENROUTER_API_KEY:", process.env.OPENROUTER_API_KEY ? "✅" : "❌ MISSING");
+  console.log(`   GROQ_API_KEY       : ${process.env.GROQ_API_KEY       ? "✅ configurée" : "❌ MANQUANTE"}`);
+  console.log(`   OPENROUTER_API_KEY : ${process.env.OPENROUTER_API_KEY ? "✅ configurée" : "❌ MANQUANTE (Code Mode désactivé)"}`);
+  console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY     ? "✅ configurée" : "❌ MANQUANTE (Search désactivé)"}`);
+  console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER         ? "✅ configurée" : "❌ MANQUANTE (Emails désactivés)"}`);
+  console.log(`   GMAIL_APP_PASSWORD : ${process.env.GMAIL_APP_PASSWORD ? "✅ configurée" : "❌ MANQUANTE (Emails désactivés)"}`);
 });
