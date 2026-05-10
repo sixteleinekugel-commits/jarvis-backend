@@ -6,13 +6,11 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 
 const app = express();
-
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
 const PORT = process.env.PORT || 10000;
 const FRONTEND_URL = "https://sixteleinekugel-commits.github.io/novaAI-chat";
-
 const pendingTokens = new Map();
 
 const VISION_MODELS = [
@@ -21,16 +19,7 @@ const VISION_MODELS = [
   "llava-v1.5-7b-4096-preview"
 ];
 
-// Modèles Code — essayés dans l'ordre si le premier échoue
-const CODE_MODELS = [
-  "laguna/laguna-m.1-instruct",
-  "deepseek/deepseek-coder",
-  "qwen/qwen-2.5-coder-32b-instruct"
-];
-
-// ═══════════════════════════════════════════════════════════
-//  NODEMAILER
-// ═══════════════════════════════════════════════════════════
+// ── NODEMAILER ────────────────────────────────────────────
 function createTransporter() {
   if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return null;
   return nodemailer.createTransport({
@@ -42,52 +31,33 @@ function createTransporter() {
   });
 }
 
-// ═══════════════════════════════════════════════════════════
-//  /debug-env — diagnostic des variables d'environnement
-//  Ouvre dans ton navigateur pour vérifier que Render a bien
-//  chargé toutes les clés après redéploiement.
-// ═══════════════════════════════════════════════════════════
+// ── ROOT ──────────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.send("Nova AI 618 Server Online — /chat /code /search /image /analyze /send-confirmation /verify-email /debug-env");
+});
+
+// ── DEBUG ENV ─────────────────────────────────────────────
 app.get("/debug-env", (req, res) => {
   const or = process.env.OPENROUTER_API_KEY;
-
-  // Liste toutes les clés présentes dans process.env qui contiennent
-  // nos mots-clés, pour détecter les fautes de frappe dans Render
   const allKeys = Object.keys(process.env);
   const relevantKeys = allKeys.filter(k =>
     k.includes("OPENROUTER") || k.includes("GMAIL") ||
     k.includes("GROQ") || k.includes("TAVILY") || k.includes("API")
   );
-
   res.json({
-    // Variables attendues
-    GROQ_API_KEY:        process.env.GROQ_API_KEY       ? `OK (${process.env.GROQ_API_KEY.slice(0,8)}...)`   : "ABSENT",
-    OPENROUTER_API_KEY:  or ? `OK (${or.slice(0,8)}...) len=${or.length}` : "ABSENT",
-    TAVILY_API_KEY:      process.env.TAVILY_API_KEY     ? `OK (${process.env.TAVILY_API_KEY.slice(0,8)}...)` : "ABSENT",
-    GMAIL_USER:          process.env.GMAIL_USER         ? `OK (${process.env.GMAIL_USER})`                   : "ABSENT",
-    GMAIL_APP_PASSWORD:  process.env.GMAIL_APP_PASSWORD ? `OK len=${process.env.GMAIL_APP_PASSWORD.length}`  : "ABSENT",
-    NODE_ENV:            process.env.NODE_ENV || "non défini",
-    server_time:         new Date().toISOString(),
-
-    // DIAGNOSTIC : toutes les clés présentes qui ressemblent à nos vars
-    // Si OPENROUTER_API_KEY est absent mais qu'une variante apparaît ici
-    // (ex: OPEN_ROUTER_API_KEY, OPENROUTERAPI_KEY...) c'est une faute de frappe
+    GROQ_API_KEY:       process.env.GROQ_API_KEY       ? `OK (${process.env.GROQ_API_KEY.slice(0,8)}...)`          : "ABSENT",
+    OPENROUTER_API_KEY: or                             ? `OK (${or.slice(0,8)}...) len=${or.length}`               : "ABSENT",
+    TAVILY_API_KEY:     process.env.TAVILY_API_KEY     ? `OK (${process.env.TAVILY_API_KEY.slice(0,8)}...)`        : "ABSENT",
+    GMAIL_USER:         process.env.GMAIL_USER         ? `OK (${process.env.GMAIL_USER})`                         : "ABSENT",
+    GMAIL_APP_PASSWORD: process.env.GMAIL_APP_PASSWORD ? `OK len=${process.env.GMAIL_APP_PASSWORD.length}`        : "ABSENT",
+    NODE_ENV:           process.env.NODE_ENV || "non défini",
+    server_time:        new Date().toISOString(),
     all_matching_env_keys: relevantKeys,
-
-    // Nombre total de variables d'environnement chargées
-    total_env_vars: allKeys.length
+    total_env_vars:     allKeys.length
   });
 });
 
-// ═══════════════════════════════════════════════════════════
-//  ROOT
-// ═══════════════════════════════════════════════════════════
-app.get("/", (req, res) => {
-  res.send("Nova AI 618 Server Online — /chat /code /search /image /analyze /send-confirmation /verify-email /debug-env");
-});
-
-// ═══════════════════════════════════════════════════════════
-//  /chat — Groq (GPT-OSS 120B / Llama 70B / Llama 8B)
-// ═══════════════════════════════════════════════════════════
+// ── CHAT — Groq ───────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages, model } = req.body;
   if (!messages) return res.status(400).json({ error: "Messages required" });
@@ -109,99 +79,67 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════
-//  /code — OpenRouter avec fallbacks
-//
-//  CAUSE DU BUG "not configured" :
-//  → Render ne recharge PAS les env vars sans redéploiement.
-//  → Si tu ajoutes OPENROUTER_API_KEY dans le dashboard APRÈS
-//    le dernier deploy, le serveur ne la voit pas.
-//  → Solution : après avoir ajouté la variable dans Render,
-//    clique sur "Manual Deploy > Deploy latest commit".
-//
-//  Ce code lit la clé à chaque requête (pas au boot) pour
-//  éviter tout problème de cache, et .trim() supprime les
-//  espaces/retours à la ligne accidentels.
-// ═══════════════════════════════════════════════════════════
+// ── CODE — OpenRouter Laguna M.1 uniquement ───────────────
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
   if (!messages) return res.status(400).json({ error: "Messages required" });
 
-  // Lecture à la demande + nettoyage
-  const rawKey = process.env.OPENROUTER_API_KEY;
-  const apiKey = rawKey ? rawKey.trim() : "";
-
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   console.log(`[/code] OPENROUTER_API_KEY: ${apiKey ? "PRESENT (" + apiKey.slice(0,8) + "... len=" + apiKey.length + ")" : "ABSENT"}`);
 
   if (!apiKey) {
     return res.status(500).json({
       error: "OPENROUTER_API_KEY not configured on server",
-      fix: "1) Ajoute OPENROUTER_API_KEY dans Render > Environment. 2) Clique 'Manual Deploy'. 3) Vérifie /debug-env."
+      fix: "Ajoute OPENROUTER_API_KEY dans Render > Environment puis redéploie."
     });
   }
 
-  let lastError = null;
-
-  for (const modelId of CODE_MODELS) {
-    try {
-      console.log(`[/code] Trying model: ${modelId}`);
-
-      const response = await axios.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          model: modelId,
-          messages,
-          temperature: 0.2,
-          max_tokens: 4096
+  try {
+    console.log("[/code] Calling Laguna M.1...");
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "poolside/laguna-m.1:free",
+        messages,
+        temperature: 0.2,
+        max_tokens: 4096
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": FRONTEND_URL,
+          "X-Title": "Nova AI 618"
         },
-        {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": FRONTEND_URL,
-            "X-Title": "Nova AI 618"
-          },
-          timeout: 60000
-        }
-      );
-
-      const content = response.data?.choices?.[0]?.message?.content;
-      if (!content) throw new Error("Empty response from model");
-
-      console.log(`[/code] SUCCESS with ${modelId}`);
-      const data = response.data;
-      data._modelUsed = modelId;
-      return res.json(data);
-
-    } catch (err) {
-      const status = err.response?.status;
-      const errMsg = err.response?.data?.error?.message || err.message;
-      console.warn(`[/code] ${modelId} failed (HTTP ${status || "?"}): ${errMsg}`);
-      lastError = { status, message: errMsg, model: modelId };
-
-      // Clé invalide → inutile d'essayer les autres
-      if (status === 401) {
-        return res.status(401).json({
-          error: "OpenRouter API key invalid (401)",
-          detail: "Vérifie que la clé est correcte dans Render et redéploie.",
-          raw: errMsg
-        });
+        timeout: 60000
       }
-      // Autres erreurs → on tente le modèle suivant
-    }
-  }
+    );
 
-  console.error("[/code] All models failed:", lastError);
-  res.status(500).json({
-    error: "Code Mode unavailable — all models failed",
-    lastError,
-    tip: "Vérifie /debug-env et redéploie sur Render."
-  });
+    const content = response.data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Empty response from Laguna M.1");
+
+    console.log("[/code] Laguna M.1 SUCCESS");
+    return res.json(response.data);
+
+  } catch (err) {
+    const status = err.response?.status;
+    const errMsg = err.response?.data?.error?.message || err.message;
+    console.error(`[/code] Laguna M.1 failed (HTTP ${status || "?"}): ${errMsg}`);
+
+    if (status === 401) {
+      return res.status(401).json({
+        error: "OpenRouter API key invalid (401)",
+        detail: "Vérifie que la clé est correcte dans Render et redéploie."
+      });
+    }
+
+    return res.status(500).json({
+      error: "Laguna M.1 unavailable: " + errMsg
+    });
+  }
 });
 
-// ═══════════════════════════════════════════════════════════
-//  /search — Tavily
-// ═══════════════════════════════════════════════════════════
+// ── SEARCH — Tavily ───────────────────────────────────────
 app.post("/search", async (req, res) => {
   const { query } = req.body;
   if (!query) return res.status(400).json({ error: "Query required" });
@@ -236,17 +174,13 @@ app.post("/search", async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════
-//  /image — Pollinations.ai
-// ═══════════════════════════════════════════════════════════
+// ── IMAGE — Pollinations ──────────────────────────────────
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "Prompt required" });
 
   try {
-    const encodedPrompt = encodeURIComponent(prompt);
-    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
-
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
     const buf = await new Promise((resolve, reject) => {
       https.get(url, (response) => {
         const chunks = [];
@@ -255,7 +189,6 @@ app.post("/image", async (req, res) => {
         response.on("error", reject);
       }).on("error", reject);
     });
-
     res.json({ image: `data:image/jpeg;base64,${buf.toString("base64")}` });
   } catch (err) {
     console.error("Pollinations /image error:", err.message);
@@ -263,9 +196,7 @@ app.post("/image", async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════
-//  /analyze — Groq Vision
-// ═══════════════════════════════════════════════════════════
+// ── ANALYZE — Groq Vision ─────────────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
   if (!image) return res.status(400).json({ error: "Image required" });
@@ -297,9 +228,7 @@ app.post("/analyze", async (req, res) => {
   res.status(500).json({ error: "Image analysis unavailable" });
 });
 
-// ═══════════════════════════════════════════════════════════
-//  /send-confirmation — token + email Nodemailer
-// ═══════════════════════════════════════════════════════════
+// ── SEND CONFIRMATION EMAIL ───────────────────────────────
 app.post("/send-confirmation", async (req, res) => {
   const { email, name } = req.body;
   if (!email || !name) {
@@ -321,15 +250,13 @@ app.post("/send-confirmation", async (req, res) => {
     return res.json({ success: true, confirmLink, emailSent: false });
   }
 
-  const mailOptions = {
-    from: `"Nova AI 618" <${process.env.GMAIL_USER}>`,
-    to: email,
-    subject: "Confirm your Nova AI 618 account",
-    html: `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<style>
+  try {
+    await transporter.sendMail({
+      from: `"Nova AI 618" <${process.env.GMAIL_USER}>`,
+      to: email,
+      subject: "Confirm your Nova AI 618 account",
+      html: `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>
 body{font-family:'Segoe UI',Arial,sans-serif;background:#050608;color:#ebebf2;margin:0;padding:0}
 .wrap{max-width:520px;margin:40px auto;background:#0b0c12;border:1px solid rgba(255,255,255,0.08);border-radius:18px;overflow:hidden}
 .head{background:linear-gradient(135deg,#0d0a1e,#070512);padding:36px 32px;text-align:center;border-bottom:1px solid rgba(124,106,255,0.2)}
@@ -345,9 +272,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#050608;color:#ebebf2;ma
 .linkbox{margin-top:16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;font-size:11px;color:#3e3e55;word-break:break-all}
 .linkbox a{color:#7c6aff}
 .foot{padding:18px 32px;border-top:1px solid rgba(255,255,255,0.05);font-size:11px;color:#3e3e55;text-align:center}
-</style>
-</head>
-<body>
+</style></head><body>
 <div class="wrap">
   <div class="head">
     <div class="logo">NOVA <em>AI 618</em></div>
@@ -373,13 +298,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#050608;color:#ebebf2;ma
     If you didn't create an account, ignore this email.
   </div>
 </div>
-</body>
-</html>`,
-    text: `Hello ${name},\n\nConfirm your Nova AI 618 account:\n${confirmLink}\n\nExpires in 24h.\n— Nova AI 618`
-  };
-
-  try {
-    await transporter.sendMail(mailOptions);
+</body></html>`,
+      text: `Hello ${name},\n\nConfirm your Nova AI 618 account:\n${confirmLink}\n\nExpires in 24h.\n— Nova AI 618`
+    });
     console.log(`Email sent to ${email}`);
     res.json({ success: true, confirmLink, emailSent: true });
   } catch (err) {
@@ -388,9 +309,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#050608;color:#ebebf2;ma
   }
 });
 
-// ═══════════════════════════════════════════════════════════
-//  /verify-email — valide le token
-// ═══════════════════════════════════════════════════════════
+// ── VERIFY EMAIL ──────────────────────────────────────────
 app.get("/verify-email", (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ success: false, error: "No token" });
@@ -406,16 +325,15 @@ app.get("/verify-email", (req, res) => {
   res.json({ success: true, email: data.email, name: data.name });
 });
 
-// ═══════════════════════════════════════════════════════════
-//  DÉMARRAGE
-// ═══════════════════════════════════════════════════════════
+// ── START ─────────────────────────────────────────────────
 app.listen(PORT, () => {
   const or = process.env.OPENROUTER_API_KEY;
   console.log(`\n🚀 Nova AI 618 Server — port ${PORT}`);
-  console.log(`   GROQ_API_KEY       : ${process.env.GROQ_API_KEY       ? "OK " + process.env.GROQ_API_KEY.slice(0,8) + "..."       : "ABSENT"}`);
-  console.log(`   OPENROUTER_API_KEY : ${or ? "OK " + or.slice(0,8) + "... len=" + or.length : "ABSENT ← redéploie après ajout !"}`);
-  console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY     ? "OK " + process.env.TAVILY_API_KEY.slice(0,8) + "..."     : "ABSENT"}`);
-  console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER         ? "OK " + process.env.GMAIL_USER                           : "ABSENT"}`);
-  console.log(`   GMAIL_APP_PASSWORD : ${process.env.GMAIL_APP_PASSWORD ? "OK len=" + process.env.GMAIL_APP_PASSWORD.length        : "ABSENT"}`);
-  console.log(`\n   Debug: https://jarvis-backend-utkp.onrender.com/debug-env\n`);
+  console.log(`   GROQ_API_KEY       : ${process.env.GROQ_API_KEY       ? "OK " + process.env.GROQ_API_KEY.slice(0,8) + "..."    : "ABSENT"}`);
+  console.log(`   OPENROUTER_API_KEY : ${or ? "OK " + or.slice(0,8) + "... len=" + or.length                                     : "ABSENT"}`);
+  console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY     ? "OK " + process.env.TAVILY_API_KEY.slice(0,8) + "..."  : "ABSENT"}`);
+  console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER         ? "OK " + process.env.GMAIL_USER                        : "ABSENT"}`);
+  console.log(`   GMAIL_APP_PASSWORD : ${process.env.GMAIL_APP_PASSWORD ? "OK len=" + process.env.GMAIL_APP_PASSWORD.length     : "ABSENT"}`);
+  console.log(`\n   Code Model : poolside/laguna-m.1:free via OpenRouter`);
+  console.log(`   Debug      : https://jarvis-backend-1-dmdo.onrender.com/debug-env\n`);
 });
