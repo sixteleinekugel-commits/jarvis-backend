@@ -49,14 +49,32 @@ function createTransporter() {
 // ═══════════════════════════════════════════════════════════
 app.get("/debug-env", (req, res) => {
   const or = process.env.OPENROUTER_API_KEY;
+
+  // Liste toutes les clés présentes dans process.env qui contiennent
+  // nos mots-clés, pour détecter les fautes de frappe dans Render
+  const allKeys = Object.keys(process.env);
+  const relevantKeys = allKeys.filter(k =>
+    k.includes("OPENROUTER") || k.includes("GMAIL") ||
+    k.includes("GROQ") || k.includes("TAVILY") || k.includes("API")
+  );
+
   res.json({
+    // Variables attendues
     GROQ_API_KEY:        process.env.GROQ_API_KEY       ? `OK (${process.env.GROQ_API_KEY.slice(0,8)}...)`   : "ABSENT",
     OPENROUTER_API_KEY:  or ? `OK (${or.slice(0,8)}...) len=${or.length}` : "ABSENT",
     TAVILY_API_KEY:      process.env.TAVILY_API_KEY     ? `OK (${process.env.TAVILY_API_KEY.slice(0,8)}...)` : "ABSENT",
     GMAIL_USER:          process.env.GMAIL_USER         ? `OK (${process.env.GMAIL_USER})`                   : "ABSENT",
     GMAIL_APP_PASSWORD:  process.env.GMAIL_APP_PASSWORD ? `OK len=${process.env.GMAIL_APP_PASSWORD.length}`  : "ABSENT",
     NODE_ENV:            process.env.NODE_ENV || "non défini",
-    server_time:         new Date().toISOString()
+    server_time:         new Date().toISOString(),
+
+    // DIAGNOSTIC : toutes les clés présentes qui ressemblent à nos vars
+    // Si OPENROUTER_API_KEY est absent mais qu'une variante apparaît ici
+    // (ex: OPEN_ROUTER_API_KEY, OPENROUTERAPI_KEY...) c'est une faute de frappe
+    all_matching_env_keys: relevantKeys,
+
+    // Nombre total de variables d'environnement chargées
+    total_env_vars: allKeys.length
   });
 });
 
