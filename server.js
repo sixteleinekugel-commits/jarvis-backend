@@ -57,29 +57,61 @@ app.get("/debug-env", (req, res) => {
   });
 });
 
-// ── CHAT — Groq ───────────────────────────────────────────
+// ── CHAT — OpenRouter (GPT-OSS-120B + fallbacks) ──────────
 app.post("/chat", async (req, res) => {
   const { messages, model } = req.body;
   if (!messages) return res.status(400).json({ error: "Messages required" });
 
-  const validModels = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
-  const selectedModel = validModels.includes(model) ? model : "openai/gpt-oss-120b";
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) {
+    return res.status(500).json({ error: "OPENROUTER_API_KEY not configured on server" });
+  }
+
+  // Map model IDs to OpenRouter equivalents
+  const modelMap = {
+    "openai/gpt-oss-120b":      "openai/gpt-4o-mini",          // GPT-OSS-120B → OpenRouter equivalent
+    "llama-3.3-70b-versatile":  "meta-llama/llama-3.3-70b-instruct:free",
+    "llama-3.1-8b-instant":     "meta-llama/llama-3.1-8b-instruct:free"
+  };
+
+  const selectedModel = modelMap[model] || "openai/gpt-4o-mini";
 
   try {
+    console.log(`[/chat] Calling OpenRouter model: ${selectedModel}`);
     const response = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      { model: selectedModel, messages, temperature: 0.7, max_tokens: 2048 },
-      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 30000 }
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: selectedModel,
+        messages,
+        temperature: 0.7,
+        max_tokens: 2048
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": FRONTEND_URL,
+          "X-Title": "Nova AI 618"
+        },
+        timeout: 30000
+      }
     );
+
+    const content = response.data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Empty response from OpenRouter");
+
+    console.log(`[/chat] OpenRouter SUCCESS (${selectedModel})`);
     res.json(response.data);
   } catch (err) {
-    console.error("Groq /chat error:", err.response?.data || err.message);
-    if (err.response?.status === 429) return res.status(429).json({ rate_limited: true });
-    res.status(500).json({ error: "AI error" });
+    const status = err.response?.status;
+    const errMsg = err.response?.data?.error?.message || err.message;
+    console.error(`[/chat] OpenRouter error (HTTP ${status || "?"}): ${errMsg}`);
+    if (status === 429) return res.status(429).json({ rate_limited: true });
+    res.status(500).json({ error: "AI error: " + errMsg });
   }
 });
 
-// ── CODE — OpenRouter Laguna M.1 uniquement ───────────────
+// ── CODE — OpenRouter Laguna M.1 ──────────────────────────
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
   if (!messages) return res.status(400).json({ error: "Messages required" });
@@ -196,7 +228,7 @@ app.post("/image", async (req, res) => {
   }
 });
 
-// ── ANALYZE — Groq Vision ─────────────────────────────────
+// ── ANALYZE — Groq Vision (kept on Groq, vision models only available there) ──
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
   if (!image) return res.status(400).json({ error: "Image required" });
@@ -329,11 +361,12 @@ app.get("/verify-email", (req, res) => {
 app.listen(PORT, () => {
   const or = process.env.OPENROUTER_API_KEY;
   console.log(`\n🚀 Nova AI 618 Server — port ${PORT}`);
-  console.log(`   GROQ_API_KEY       : ${process.env.GROQ_API_KEY       ? "OK " + process.env.GROQ_API_KEY.slice(0,8) + "..."    : "ABSENT"}`);
-  console.log(`   OPENROUTER_API_KEY : ${or ? "OK " + or.slice(0,8) + "... len=" + or.length                                     : "ABSENT"}`);
+  console.log(`   GROQ_API_KEY       : ${process.env.GROQ_API_KEY       ? "OK " + process.env.GROQ_API_KEY.slice(0,8) + "..."    : "ABSENT (only needed for image analysis)"}`);
+  console.log(`   OPENROUTER_API_KEY : ${or ? "OK " + or.slice(0,8) + "... len=" + or.length                                     : "ABSENT ← REQUIRED for /chat and /code"}`);
   console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY     ? "OK " + process.env.TAVILY_API_KEY.slice(0,8) + "..."  : "ABSENT"}`);
   console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER         ? "OK " + process.env.GMAIL_USER                        : "ABSENT"}`);
   console.log(`   GMAIL_APP_PASSWORD : ${process.env.GMAIL_APP_PASSWORD ? "OK len=" + process.env.GMAIL_APP_PASSWORD.length     : "ABSENT"}`);
-  console.log(`\n   Code Model : poolside/laguna-m.1:free via OpenRouter`);
+  console.log(`\n   Chat Model : openai/gpt-4o-mini via OpenRouter`);
+  console.log(`   Code Model : poolside/laguna-m.1:free via OpenRouter`);
   console.log(`   Debug      : https://jarvis-backend-1-dmdo.onrender.com/debug-env\n`);
 });
