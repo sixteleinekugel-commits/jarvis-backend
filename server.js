@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import https from "https";
+import http from "http";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 
@@ -15,6 +16,7 @@ const pendingTokens = new Map();
 
 // ─────────────────────────────────────────────────────────
 // OPENROUTER MODEL MAP
+// gpt-4o-mini is the default (better than gpt-oss-120b free tier)
 // ─────────────────────────────────────────────────────────
 const MODEL_MAP = {
   "openai/gpt-oss-120b":     "openai/gpt-4o-mini",
@@ -47,18 +49,22 @@ app.get("/debug-env", (req, res) => {
   const or = process.env.OPENROUTER_API_KEY;
   res.json({
     OPENROUTER_API_KEY: or ? `OK (${or.slice(0,8)}...) len=${or.length}` : "ABSENT — REQUIRED",
-    GROQ_API_KEY:       process.env.GROQ_API_KEY ? `OK (${process.env.GROQ_API_KEY.slice(0,8)}...)` : "ABSENT (not needed anymore)",
-    TAVILY_API_KEY:     process.env.TAVILY_API_KEY ? `OK (${process.env.TAVILY_API_KEY.slice(0,8)}...)` : "ABSENT",
+    TAVILY_API_KEY:     process.env.TAVILY_API_KEY ? `OK` : "ABSENT",
     GMAIL_USER:         process.env.GMAIL_USER ? `OK (${process.env.GMAIL_USER})` : "ABSENT",
-    GMAIL_APP_PASSWORD: process.env.GMAIL_APP_PASSWORD ? `OK len=${process.env.GMAIL_APP_PASSWORD.length}` : "ABSENT",
     NODE_ENV:           process.env.NODE_ENV || "development",
     server_time:        new Date().toISOString(),
-    routes: ["/chat", "/code", "/analyze", "/search", "/image", "/video", "/send-confirmation", "/verify-email"]
+    models: {
+      chat:    "openai/gpt-4o-mini (via OpenRouter)",
+      code:    "poolside/laguna-m.1:free (via OpenRouter)",
+      analyze: "openai/gpt-4o-mini vision (via OpenRouter)",
+      video:   "Pollinations animatediff GIF (free, no key)"
+    }
   });
 });
 
 // ─────────────────────────────────────────────────────────
-// /chat — ALL models via OpenRouter
+// /chat — ALL models via OpenRouter, gpt-4o-mini as default
+// max_tokens: 4000 for standard models
 // ─────────────────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages, model, temperature } = req.body;
@@ -81,7 +87,7 @@ app.post("/chat", async (req, res) => {
         model: selectedModel,
         messages,
         temperature: temperature ?? 0.7,
-        max_tokens: 2048
+        max_tokens: 4000
       },
       {
         headers: {
@@ -90,7 +96,7 @@ app.post("/chat", async (req, res) => {
           "HTTP-Referer": FRONTEND_URL,
           "X-Title": "Nova AI 618"
         },
-        timeout: 35000
+        timeout: 40000
       }
     );
 
@@ -111,6 +117,7 @@ app.post("/chat", async (req, res) => {
 
 // ─────────────────────────────────────────────────────────
 // /code — Laguna M.1 via OpenRouter
+// max_tokens: 8000 for code generation
 // ─────────────────────────────────────────────────────────
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
@@ -132,7 +139,7 @@ app.post("/code", async (req, res) => {
         model: "poolside/laguna-m.1:free",
         messages,
         temperature: 0.2,
-        max_tokens: 8192
+        max_tokens: 8000
       },
       {
         headers: {
@@ -141,7 +148,7 @@ app.post("/code", async (req, res) => {
           "HTTP-Referer": FRONTEND_URL,
           "X-Title": "Nova AI 618"
         },
-        timeout: 60000
+        timeout: 90000
       }
     );
 
@@ -189,7 +196,7 @@ app.post("/analyze", async (req, res) => {
             ]
           }
         ],
-        max_tokens: 1024,
+        max_tokens: 1500,
         temperature: 0.5
       },
       {
@@ -256,72 +263,145 @@ app.post("/search", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /image — Pollinations image generation
+// /image — Pollinations image generation (no API key)
 // ─────────────────────────────────────────────────────────
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt required" });
 
   try {
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
-    console.log(`[/image] Fetching...`);
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&enhance=true&model=flux&seed=${Date.now()}`;
+    console.log(`[/image] Fetching Pollinations image...`);
 
-    const buf = await new Promise((resolve, reject) => {
-      https.get(url, (response) => {
-        const chunks = [];
-        response.on("data", c => chunks.push(c));
-        response.on("end", () => resolve(Buffer.concat(chunks)));
-        response.on("error", reject);
-      }).on("error", reject);
-    });
-
+    const buf = await fetchBinary(url, 60000);
     console.log(`[/image] SUCCESS (${buf.length} bytes)`);
     res.json({ image: `data:image/jpeg;base64,${buf.toString("base64")}` });
 
   } catch (err) {
-    console.error("[/image] Pollinations error:", err.message);
+    console.error("[/image] Error:", err.message);
     res.status(500).json({ error: "Image generation failed: " + err.message });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// /video — Video generation via Pollinations
+// /video — Animated GIF via Pollinations animatediff
+// FIX: Use the correct Pollinations endpoint that actually works
+// Returns a base64 GIF (animated)
 // ─────────────────────────────────────────────────────────
 app.post("/video", async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt required" });
 
-  const cleanPrompt = prompt.slice(0, 200).replace(/[^\w\s,.-]/g, " ").trim();
+  // Clean prompt for video/animation
+  const cleanPrompt = prompt
+    .slice(0, 180)
+    .replace(/[^\w\s,.\-!?]/g, " ")
+    .trim();
 
-  try {
-    const videoUrl = `https://video.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}`;
-    console.log(`[/video] Fetching...`);
+  console.log(`[/video] Generating animated GIF for: "${cleanPrompt.slice(0,60)}..."`);
 
-    const buf = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Video generation timeout (90s)")), 90000);
+  // Strategy: try multiple Pollinations video/animation endpoints
+  const attempts = [
+    // Attempt 1: Pollinations animatediff model (GIF)
+    {
+      url: `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt + ", cinematic animation, motion, dynamic")}?model=animatediff&width=512&height=288&nologo=true&seed=${Date.now()}`,
+      type: "image/gif",
+      label: "animatediff"
+    },
+    // Attempt 2: Fallback — use turbo model as static (reliable)
+    {
+      url: `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt + ", cinematic, dramatic lighting, photorealistic")}?width=896&height=512&nologo=true&enhance=true&model=flux&seed=${Date.now()}`,
+      type: "image/jpeg",
+      label: "flux-fallback"
+    }
+  ];
 
-      https.get(videoUrl, (response) => {
-        if (response.statusCode !== 200) {
-          clearTimeout(timeout);
-          return reject(new Error(`Pollinations returned HTTP ${response.statusCode}`));
-        }
-        const chunks = [];
-        response.on("data", c => chunks.push(c));
-        response.on("end", () => { clearTimeout(timeout); resolve(Buffer.concat(chunks)); });
-        response.on("error", (e) => { clearTimeout(timeout); reject(e); });
-      }).on("error", (e) => { clearTimeout(timeout); reject(e); });
+  for (const attempt of attempts) {
+    try {
+      console.log(`[/video] Trying ${attempt.label}: ${attempt.url.slice(0,80)}...`);
+      const buf = await fetchBinary(attempt.url, 120000);
+
+      if (buf.length < 500) {
+        console.warn(`[/video] ${attempt.label} response too small (${buf.length} bytes), trying next...`);
+        continue;
+      }
+
+      // Detect actual content type from magic bytes
+      let mimeType = attempt.type;
+      if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+        mimeType = "image/gif";
+      } else if (buf[0] === 0xff && buf[1] === 0xd8) {
+        mimeType = "image/jpeg";
+      } else if (buf[0] === 0x89 && buf[1] === 0x50) {
+        mimeType = "image/png";
+      } else if (buf[0] === 0x00 && buf[4] === 0x66) {
+        mimeType = "video/mp4";
+      }
+
+      const isVideo = mimeType === "video/mp4";
+      const isGif   = mimeType === "image/gif";
+      const isImage = mimeType.startsWith("image/") && !isGif;
+
+      console.log(`[/video] ${attempt.label} SUCCESS: ${buf.length} bytes, type=${mimeType}`);
+
+      return res.json({
+        video: `data:${mimeType};base64,${buf.toString("base64")}`,
+        mime:  mimeType,
+        isGif,
+        isVideo,
+        isImage,
+        model: attempt.label
+      });
+
+    } catch (err) {
+      console.error(`[/video] ${attempt.label} failed:`, err.message);
+      // continue to next attempt
+    }
+  }
+
+  // All attempts failed
+  res.status(500).json({
+    error: "Video/animation generation failed. Pollinations may be temporarily unavailable. Please try again in a few seconds."
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// fetchBinary — robust HTTP/HTTPS fetch returning a Buffer
+// ─────────────────────────────────────────────────────────
+function fetchBinary(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https") ? https : http;
+    const timer = setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+
+    const req = lib.get(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; NovaAI/1.0)",
+        "Accept": "*/*"
+      }
+    }, (response) => {
+      // Follow redirects
+      if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+        clearTimeout(timer);
+        return fetchBinary(response.headers.location, timeoutMs).then(resolve).catch(reject);
+      }
+
+      if (response.statusCode && response.statusCode >= 400) {
+        clearTimeout(timer);
+        return reject(new Error(`HTTP ${response.statusCode}`));
+      }
+
+      const chunks = [];
+      response.on("data", c => chunks.push(c));
+      response.on("end", () => {
+        clearTimeout(timer);
+        resolve(Buffer.concat(chunks));
+      });
+      response.on("error", e => { clearTimeout(timer); reject(e); });
     });
 
-    if (buf.length < 1000) throw new Error("Video response too small — likely an error page");
-
-    console.log(`[/video] SUCCESS (${(buf.length / 1024 / 1024).toFixed(1)} MB)`);
-    res.json({ video: `data:video/mp4;base64,${buf.toString("base64")}` });
-
-  } catch (err) {
-    console.error("[/video] Error:", err.message);
-    res.status(500).json({ error: "Video generation failed: " + err.message });
-  }
-});
+    req.on("error", e => { clearTimeout(timer); reject(e); });
+  });
+}
 
 // ─────────────────────────────────────────────────────────
 // /send-confirmation
@@ -343,7 +423,6 @@ app.post("/send-confirmation", async (req, res) => {
 
   const transporter = createTransporter();
   if (!transporter) {
-    console.warn("[/send-confirmation] Gmail not configured — returning link only");
     return res.json({ success: true, confirmLink, emailSent: false });
   }
 
@@ -352,34 +431,28 @@ app.post("/send-confirmation", async (req, res) => {
       from: `"Nova AI 618" <${process.env.GMAIL_USER}>`,
       to: email,
       subject: "Confirm your Nova AI 618 account",
-      html: `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>
+      html: `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
 body{font-family:'Segoe UI',Arial,sans-serif;background:#050608;color:#ebebf2;margin:0;padding:0}
 .wrap{max-width:520px;margin:40px auto;background:#0b0c12;border:1px solid rgba(255,255,255,0.08);border-radius:18px;overflow:hidden}
 .head{background:linear-gradient(135deg,#0d0a1e,#070512);padding:36px 32px;text-align:center;border-bottom:1px solid rgba(124,106,255,0.2)}
-.logo{font-size:26px;font-weight:800;color:#ebebf2;letter-spacing:-0.5px}
-.logo em{color:#7c6aff;font-style:normal}
+.logo{font-size:26px;font-weight:800;color:#ebebf2}.logo em{color:#7c6aff;font-style:normal}
 .sub{color:#7a7a9a;font-size:13px;margin-top:6px}
-.body{padding:32px}
-.greet{font-size:17px;font-weight:600;margin-bottom:12px;color:#ebebf2}
+.body{padding:32px}.greet{font-size:17px;font-weight:600;margin-bottom:12px}
 .txt{color:#7a7a9a;font-size:14px;line-height:1.7;margin-bottom:28px}
 .btn-wrap{text-align:center;margin:24px 0}
-.btn{display:inline-block;background:#7c6aff;color:#ffffff !important;text-decoration:none;padding:14px 36px;border-radius:10px;font-weight:700;font-size:15px}
+.btn{display:inline-block;background:#7c6aff;color:#fff !important;text-decoration:none;padding:14px 36px;border-radius:10px;font-weight:700;font-size:15px}
 .expire{background:rgba(255,140,0,0.08);border:1px solid rgba(255,140,0,0.2);border-radius:8px;padding:10px 14px;font-size:12px;color:rgba(255,140,0,0.9);margin-top:20px}
 .linkbox{margin-top:16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;font-size:11px;color:#3e3e55;word-break:break-all}
 .linkbox a{color:#7c6aff}
 .foot{padding:18px 32px;border-top:1px solid rgba(255,255,255,0.05);font-size:11px;color:#3e3e55;text-align:center}
-</style></head><body>
-<div class="wrap">
-  <div class="head"><div class="logo">NOVA <em>AI 618</em></div><div class="sub">Created by Sixte · Intelligence redefined</div></div>
-  <div class="body">
-    <div class="greet">Hello ${name} 👋</div>
-    <div class="txt">Welcome to <strong style="color:#ebebf2">Nova AI 618</strong>!<br>Click below to confirm your account and unlock all features.</div>
-    <div class="btn-wrap"><a href="${confirmLink}" class="btn">Confirm my account</a></div>
-    <div class="expire">This link expires in <strong>24 hours</strong>.</div>
-    <div class="linkbox">If the button doesn't work:<br><a href="${confirmLink}">${confirmLink}</a></div>
-  </div>
-  <div class="foot">Nova AI 618 · Created by Sixte Leinekugel<br>If you didn't create an account, ignore this email.</div>
+</style></head><body><div class="wrap">
+<div class="head"><div class="logo">NOVA <em>AI 618</em></div><div class="sub">Created by Sixte · Intelligence redefined</div></div>
+<div class="body"><div class="greet">Hello ${name} 👋</div>
+<div class="txt">Welcome to <strong style="color:#ebebf2">Nova AI 618</strong>!<br>Click below to confirm your account.</div>
+<div class="btn-wrap"><a href="${confirmLink}" class="btn">Confirm my account</a></div>
+<div class="expire">This link expires in <strong>24 hours</strong>.</div>
+<div class="linkbox">If the button doesn't work:<br><a href="${confirmLink}">${confirmLink}</a></div>
+</div><div class="foot">Nova AI 618 · Created by Sixte Leinekugel<br>If you didn't create an account, ignore this email.</div>
 </div></body></html>`,
       text: `Hello ${name},\n\nConfirm your Nova AI 618 account:\n${confirmLink}\n\nExpires in 24h.\n— Nova AI 618`
     });
@@ -397,14 +470,12 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#050608;color:#ebebf2;ma
 app.get("/verify-email", (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ success: false, error: "No token" });
-
   const data = pendingTokens.get(token);
   if (!data) return res.status(400).json({ success: false, error: "Invalid or already used token" });
   if (Date.now() > data.expires) {
     pendingTokens.delete(token);
     return res.status(400).json({ success: false, error: "Token expired" });
   }
-
   pendingTokens.delete(token);
   res.json({ success: true, email: data.email, name: data.name });
 });
@@ -415,14 +486,13 @@ app.get("/verify-email", (req, res) => {
 app.listen(PORT, () => {
   const or = process.env.OPENROUTER_API_KEY;
   console.log(`\n🚀 Nova AI 618 Backend — port ${PORT}`);
-  console.log(`   OPENROUTER_API_KEY : ${or ? "✅ OK " + or.slice(0,8) + "... len=" + or.length : "❌ ABSENT — REQUIRED for /chat /code /analyze"}`);
-  console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT — needed for /search"}`);
-  console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER ? "✅ OK " + process.env.GMAIL_USER : "⚠️  ABSENT — emails disabled"}`);
-  console.log(`   GMAIL_APP_PASSWORD : ${process.env.GMAIL_APP_PASSWORD ? "✅ OK" : "⚠️  ABSENT — emails disabled"}`);
-  console.log(`\n   /chat   → OpenRouter (gpt-4o-mini, llama-3.3-70b, llama-3.1-8b)`);
-  console.log(`   /code   → OpenRouter (laguna-m.1)`);
-  console.log(`   /analyze→ OpenRouter (gpt-4o-mini vision)`);
-  console.log(`   /image  → Pollinations (no key needed)`);
-  console.log(`   /video  → Pollinations video (no key needed)`);
-  console.log(`   /search → Tavily\n`);
+  console.log(`   OPENROUTER_API_KEY : ${or ? "✅ OK " + or.slice(0,8) + "..." : "❌ ABSENT — REQUIRED"}`);
+  console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT"}`);
+  console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER ? "✅ " + process.env.GMAIL_USER : "⚠️  ABSENT"}`);
+  console.log(`\n   /chat    → openai/gpt-4o-mini (4000 tokens)`);
+  console.log(`   /code    → poolside/laguna-m.1:free (8000 tokens)`);
+  console.log(`   /analyze → openai/gpt-4o-mini vision`);
+  console.log(`   /image   → Pollinations flux`);
+  console.log(`   /video   → Pollinations animatediff GIF (with fallback)`);
+  console.log(`   /search  → Tavily\n`);
 });
