@@ -132,7 +132,7 @@ app.post("/code", async (req, res) => {
         model: "poolside/laguna-m.1:free",
         messages,
         temperature: 0.2,
-        max_tokens: 4096
+        max_tokens: 8192
       },
       {
         headers: {
