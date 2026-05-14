@@ -31,22 +31,36 @@ function createTransporter() {
   });
 }
 
+// Helper pour récupérer du binaire (utilisé pour les images/vidéos)
+async function fetchBinary(url, timeoutMs = 60000) {
+  const response = await axios.get(url, { 
+    responseType: "arraybuffer", 
+    timeout: timeoutMs,
+    headers: { "User-Agent": "Mozilla/5.0" }
+  });
+  return Buffer.from(response.data);
+}
+
 // ─────────────────────────────────────────────────────────
-// ANALYSE D'IMAGE (GROQ - llama-4-scout-17b)
+// ROUTES PRINCIPALES
 // ─────────────────────────────────────────────────────────
+
+app.get("/", (req, res) => res.send("Nova AI 618 Backend — Operational"));
+
+// --- ANALYSE D'IMAGE (GROQ VISION) ---
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
   const groqKey = process.env.GROQ_API_KEY?.trim();
   
-  if (!groqKey) return res.status(500).json({ error: "GROQ_API_KEY non configurée" });
-  if (!image) return res.status(400).json({ error: "Image manquante" });
+  if (!groqKey) return res.status(500).json({ error: "GROQ_API_KEY non configurée dans Render" });
+  if (!image) return res.status(400).json({ error: "Aucune image reçue" });
 
   try {
-    console.log("[/analyze] Envoi à Groq...");
+    console.log("[/analyze] Envoi vers Groq Vision...");
     const response = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        model: "llama-3.2-11b-vision-preview", // Modèle stable et ultra-rapide
         messages: [
           {
             role: "user",
@@ -59,116 +73,118 @@ app.post("/analyze", async (req, res) => {
         temperature: 0.5,
         max_tokens: 1024
       },
-      {
-        headers: {
-          "Authorization": `Bearer ${groqKey}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 30000
-      }
+      { headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" } }
     );
 
     const content = response.data?.choices?.[0]?.message?.content;
     res.json({ choices: [{ message: { content } }] });
   } catch (err) {
-    console.error("Groq Vision Error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Erreur Groq Vision : " + err.message });
+    console.error("Groq Error:", err.response?.data || err.message);
+    const msg = err.response?.data?.error?.message || "Erreur de clé ou de quota Groq";
+    res.status(500).json({ error: "Vision Error: " + msg });
   }
 });
 
-// ─────────────────────────────────────────────────────────
-// GÉNÉRATION VIDÉO (HUGGING FACE - Version Corrigée)
-// ─────────────────────────────────────────────────────────
+// --- GÉNÉRATION VIDÉO (POLLINATIONS LATTE) ---
 app.post("/video", async (req, res) => {
   const { prompt } = req.body;
-  const hfToken = process.env.HF_TOKEN?.trim();
-  if (!hfToken) return res.status(500).json({ error: "HF_TOKEN absent" });
+  if (!prompt) return res.status(400).json({ error: "Prompt requis" });
 
   try {
-    console.log("[/video] Génération Hugging Face...");
-    const response = await axios.post(
-      "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b",
-      { inputs: prompt },
-      {
-        headers: { 
-          "Authorization": `Bearer ${hfToken}`,
-          "Content-Type": "application/json" 
-        },
-        responseType: "arraybuffer",
-        params: { wait_for_model: true }, // Crucial pour réveiller le modèle
-        timeout: 180000
-      }
-    );
+    console.log(`[/video] Génération: ${prompt.slice(0, 50)}...`);
+    // Modèle Latte sur Pollinations (plus stable que HF en mode gratuit)
+    const videoUrl = `https://video.pollinations.ai/prompt/${encodeURIComponent(prompt)}?model=latte&seed=${Date.now()}`;
+    
+    const buffer = await fetchBinary(videoUrl, 90000);
+    const base64 = buffer.toString("base64");
 
-    const base64 = Buffer.from(response.data).toString("base64");
+    if (base64.length < 1000) throw new Error("Fichier vidéo invalide ou trop petit");
+
+    console.log("[/video] OK - Taille:", Math.round(buffer.length/1024), "KB");
     res.json({ video: `data:video/mp4;base64,${base64}`, mime: "video/mp4" });
   } catch (err) {
     console.error("Video Error:", err.message);
-    res.status(500).json({ error: "Échec vidéo : " + err.message });
+    res.status(500).json({ error: "La génération vidéo a échoué. Réessayez dans un instant." });
   }
 });
 
-// ─────────────────────────────────────────────────────────
-// TOUTES LES AUTRES FONCTIONS (Chat, Code, Image, Email)
-// ─────────────────────────────────────────────────────────
-
+// --- CHAT (OPENROUTER) ---
 app.post("/chat", async (req, res) => {
   const { messages, model, temperature } = req.body;
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   const selectedModel = MODEL_MAP[model] || "openai/gpt-oss-120b";
+
   try {
-    const r = await axios.post("https://openrouter.ai/api/v1/chat/completions", 
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
       { model: selectedModel, messages, temperature: temperature ?? 0.7, max_tokens: 4000 },
-      { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }}
+      { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 40000 }
     );
-    res.json(r.data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json(response.data);
+  } catch (err) { res.status(500).json({ error: "Chat Error: " + err.message }); }
 });
 
+// --- CODE (LAGUNA) ---
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
   try {
-    const r = await axios.post("https://openrouter.ai/api/v1/chat/completions", 
-      { model: "poolside/laguna-m.1:free", messages, temperature: 0.2, max_tokens: 8000 },
-      { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }, timeout: 90000}
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      { model: "poolside/laguna-m.1:free", messages, temperature: 0.1, max_tokens: 8000 },
+      { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }, timeout: 90000 }
     );
-    res.json(r.data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json(response.data);
+  } catch (err) { res.status(500).json({ error: "Code Error" }); }
 });
 
+// --- IMAGE (FLUX) ---
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   try {
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&model=flux&seed=${Date.now()}`;
-    const response = await axios.get(url, { responseType: "arraybuffer" });
-    res.json({ image: `data:image/jpeg;base64,${Buffer.from(response.data).toString("base64")}` });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const buf = await fetchBinary(url);
+    res.json({ image: `data:image/jpeg;base64,${buf.toString("base64")}` });
+  } catch (err) { res.status(500).json({ error: "Image Error" }); }
 });
 
+// --- SEARCH (TAVILY) ---
 app.post("/search", async (req, res) => {
   const { query } = req.body;
   try {
     const r = await axios.post("https://api.tavily.com/search", {
-      api_key: process.env.TAVILY_API_KEY, query, search_depth: "basic"
+      api_key: process.env.TAVILY_API_KEY, query, search_depth: "basic", include_answer: true
     });
-    res.json({ answer: r.data.answer, context: r.data.results.map(s => s.content).join("\n"), sources: r.data.results });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json({
+      answer: r.data.answer || "",
+      context: (r.data.results || []).map(s => s.content).join("\n"),
+      sources: r.data.results
+    });
+  } catch (err) { res.status(500).json({ error: "Search Error" }); }
 });
 
-// Système de confirmation d'email
+// ─────────────────────────────────────────────────────────
+// SYSTÈME DE CONFIRMATION (Email)
+// ─────────────────────────────────────────────────────────
+
 app.post("/send-confirmation", async (req, res) => {
   const { email, name } = req.body;
   const token = crypto.randomBytes(32).toString("hex");
   pendingTokens.set(token, { email: email.toLowerCase(), name, expires: Date.now() + 86400000 });
-  const transporter = createTransporter();
   const confirmLink = `${FRONTEND_URL}?confirm=${token}`;
-  if (!transporter) return res.json({ success: true, confirmLink });
+  
+  const transporter = createTransporter();
+  if (!transporter) return res.json({ success: true, confirmLink, emailSent: false });
 
   try {
     await transporter.sendMail({
       from: `"Nova AI 618" <${process.env.GMAIL_USER}>`,
       to: email,
-      subject: "Confirm your Nova AI 618 account",
-      html: `<h1>Welcome ${name}</h1><p>Click here: <a href="${confirmLink}">${confirmLink}</a></p>`
+      subject: "Confirm your Nova AI account",
+      html: `<div style="background:#0b0c12; color:#fff; padding:20px; border-radius:10px; font-family:sans-serif;">
+              <h2>Welcome to Nova AI 618</h2>
+              <p>Hello ${name}, click the button below to verify your account.</p>
+              <a href="${confirmLink}" style="background:#7c6aff; color:#fff; padding:10px 20px; text-decoration:none; border-radius:5px; display:inline-block;">Confirm Account</a>
+             </div>`
     });
     res.json({ success: true, emailSent: true });
   } catch (err) { res.json({ success: true, confirmLink, emailSent: false }); }
@@ -177,9 +193,20 @@ app.post("/send-confirmation", async (req, res) => {
 app.get("/verify-email", (req, res) => {
   const { token } = req.query;
   const data = pendingTokens.get(token);
-  if (!data || Date.now() > data.expires) return res.status(400).json({ error: "Invalid/Expired" });
+  if (!data || Date.now() > data.expires) return res.status(400).json({ error: "Invalid token" });
   pendingTokens.delete(token);
   res.json({ success: true, email: data.email, name: data.name });
 });
 
-app.listen(PORT, () => console.log(`🚀 Nova AI 618 — Port ${PORT} (Groq Vision & HF Video active)`));
+// ─────────────────────────────────────────────────────────
+// START
+// ─────────────────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`
+  🚀 Nova AI 618 — Serveur démarré sur le port ${PORT}
+  Clés détectées :
+  - Groq (Vision) : ${process.env.GROQ_API_KEY ? "✅" : "❌"}
+  - OpenRouter    : ${process.env.OPENROUTER_API_KEY ? "✅" : "❌"}
+  - Tavily        : ${process.env.TAVILY_API_KEY ? "✅" : "❌"}
+  `);
+});
