@@ -19,7 +19,7 @@ const pendingTokens = new Map();
 // gpt-oss-120b = modèle principal gratuit sur OpenRouter
 // ─────────────────────────────────────────────────────────
 const MODEL_MAP = {
-  "openai/gpt-oss-120b":     "openai/gpt-oss-120b",
+  "openai/gpt-oss-120b:free":     "openai/gpt-oss-120b:free",
   "llama-3.3-70b-versatile": "meta-llama/llama-3.3-70b-instruct:free",
   "llama-3.1-8b-instant":    "meta-llama/llama-3.1-8b-instruct:free"
 };
@@ -44,9 +44,9 @@ app.get("/debug-env", (req, res) => {
     GMAIL_USER:         process.env.GMAIL_USER ? `OK (${process.env.GMAIL_USER})` : "ABSENT",
     server_time:        new Date().toISOString(),
     models: {
-      chat:    "openai/gpt-oss-120b (4000 tokens)",
+      chat:    "openai/gpt-oss-120b:free (4000 tokens)",
       code:    "poolside/laguna-m.1:free (8000 tokens)",
-      analyze: "openai/gpt-oss-120b vision",
+      analyze: "openai/gpt-oss-120b:free vision",
       video:   "HuggingFace damo-vilab/text-to-video-ms-1.7b (free, no key)"
     }
   });
@@ -64,7 +64,7 @@ app.post("/chat", async (req, res) => {
   if (!apiKey)
     return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
 
-  const selectedModel = MODEL_MAP[model] || "openai/gpt-oss-120b";
+  const selectedModel = MODEL_MAP[model] || "openai/gpt-oss-120b:free";
 
   try {
     console.log(`[/chat] ${model} → ${selectedModel}`);
@@ -150,7 +150,7 @@ app.post("/analyze", async (req, res) => {
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "openai/gpt-oss-120b",
+        model: "openai/gpt-oss-120b:free",
         messages: [{
           role: "user",
           content: [
@@ -396,9 +396,9 @@ app.listen(PORT, () => {
   console.log(`   OPENROUTER_API_KEY : ${or ? "✅ OK " + or.slice(0,8) + "..." : "❌ ABSENT"}`);
   console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT"}`);
   console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER ? "✅ " + process.env.GMAIL_USER : "⚠️  ABSENT"}`);
-  console.log(`\n   /chat    → openai/gpt-oss-120b        (4 000 tokens)`);
+  console.log(`\n   /chat    → openai/gpt-oss-120b:free      (4 000 tokens)`);
   console.log(`   /code    → poolside/laguna-m.1:free   (8 000 tokens)`);
-  console.log(`   /analyze → openai/gpt-oss-120b vision`);
+  console.log(`   /analyze → openai/gpt-oss-120b:free vision`);
   console.log(`   /image   → Pollinations flux           (no key)`);
   console.log(`   /video   → HuggingFace text-to-video   (no key, retry 503)`);
   console.log(`   /search  → Tavily\n`);
