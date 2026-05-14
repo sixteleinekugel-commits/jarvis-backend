@@ -219,7 +219,7 @@ app.post("/image", async (req, res) => {
 
   try {
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&enhance=true&model=flux&seed=${Date.now()}`;
-    const buf = await fetchBinary(url, 60000);
+    const buf = await fetchBinary(url, 200000);
     res.json({ image: `data:image/jpeg;base64,${buf.toString("base64")}` });
   } catch (err) {
     res.status(500).json({ error: "Image generation failed: " + err.message });
