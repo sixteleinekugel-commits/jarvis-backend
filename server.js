@@ -31,7 +31,7 @@ function createTransporter() {
   });
 }
 
-// Helper pour convertir une URL d'image en Base64
+// Helper pour convertir une URL d'image en Base64 pour le frontend
 function fetchBinary(url, timeoutMs) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith("https") ? https : http;
@@ -50,12 +50,12 @@ function fetchBinary(url, timeoutMs) {
 }
 
 // ─────────────────────────────────────────────────────────
-// ROUTES PRINCIPALES
+// ROUTES API
 // ─────────────────────────────────────────────────────────
 
 app.get("/", (req, res) => res.send("Nova AI 618 Backend — Operational"));
 
-// --- CHAT (FONCTIONNEL) ---
+// --- CHAT (OpenRouter) ---
 app.post("/chat", async (req, res) => {
   const { messages, model, temperature } = req.body;
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
@@ -73,7 +73,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// --- CODE (LAGUNA) ---
+// --- CODE (Laguna M.1 - 8000 tokens) ---
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
   try {
@@ -86,7 +86,7 @@ app.post("/code", async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Code Error" }); }
 });
 
-// --- IMAGE (MODIFIÉ : SDXL FREE VIA OPENROUTER) ---
+// --- IMAGE (MODIFIÉ : OpenRouter Free Switch) ---
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
   const apiKey = process.env.OPENROUTER_API_KEY;
@@ -94,11 +94,11 @@ app.post("/image", async (req, res) => {
   if (!prompt) return res.status(400).json({ error: "Prompt requis" });
 
   try {
-    console.log(`[/image] Génération SDXL via OpenRouter...`);
+    console.log(`[/image] Génération via OpenRouter Free Router...`);
     const response = await axios.post(
       "https://openrouter.ai/api/v1/images/generations",
       {
-        model: "stabilityai/sdxl:free", // Nom du modèle gratuit SDXL sur OpenRouter
+        model: "openrouter/free", // Utilise dynamiquement le meilleur modèle gratuit (SDXL ou autre)
         prompt: prompt,
         response_format: "url"
       },
@@ -106,32 +106,28 @@ app.post("/image", async (req, res) => {
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": FRONTEND_URL
+          "HTTP-Referer": FRONTEND_URL,
+          "X-Title": "Nova AI 618"
         },
         timeout: 60000
       }
     );
 
     const imageUrl = response.data?.data?.[0]?.url;
-    if (!imageUrl) throw new Error("Aucune URL d'image reçue d'OpenRouter.");
+    if (!imageUrl) throw new Error("Le routeur gratuit n'a pas pu générer d'image.");
 
-    // Conversion de l'URL reçue en base64 pour ton frontend
     const buf = await fetchBinary(imageUrl, 30000);
     res.json({ image: `data:image/jpeg;base64,${buf.toString("base64")}` });
 
   } catch (err) {
-    console.error("SDXL Error:", err.response?.data || err.message);
-    res.status(500).json({ 
-      error: "SDXL Generation Failed", 
-      details: err.response?.data?.error?.message || err.message 
-    });
+    console.error("Image Error:", err.response?.data || err.message);
+    res.status(500).json({ error: "Génération échouée", details: err.message });
   }
 });
 
-// --- ANALYSE D'IMAGE (VISION) ---
+// --- ANALYSE D'IMAGE (Vision) ---
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   try {
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
@@ -139,16 +135,16 @@ app.post("/analyze", async (req, res) => {
         model: "openai/gpt-oss-120b",
         messages: [{ role: "user", content: [
           { type: "image_url", image_url: { url: image } },
-          { type: "text", text: question || "Describe this image." }
+          { type: "text", text: question || "Analyze this image." }
         ]}]
       },
-      { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 45000 }
+      { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }, timeout: 45000 }
     );
     res.json({ choices: [{ message: { content: response.data?.choices?.[0]?.message?.content } }] });
   } catch (err) { res.status(500).json({ error: "Vision Error" }); }
 });
 
-// --- RECHERCHE (TAVILY) ---
+// --- RECHERCHE (Tavily) ---
 app.post("/search", async (req, res) => {
   const { query } = req.body;
   try {
@@ -157,44 +153,52 @@ app.post("/search", async (req, res) => {
     });
     res.json({
       answer: r.data.answer || "",
-      context: (r.data.results || []).map(s => s.content).join("\n"),
+      context: (r.data.results || []).map(s => `[${s.title}]\n${s.content}`).join("\n"),
       sources: r.data.results
     });
   } catch (err) { res.status(500).json({ error: "Search Error" }); }
 });
 
-// --- VIDÉO (HUGGING FACE) ---
+// --- VIDÉO (Hugging Face avec Retry) ---
 app.post("/video", async (req, res) => {
   const { prompt } = req.body;
   const HF_URL = "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b";
   try {
     const response = await axios.post(HF_URL, { inputs: prompt }, { 
         responseType: "arraybuffer", 
-        timeout: 120000 
+        timeout: 150000 
     });
     const base64 = Buffer.from(response.data).toString("base64");
     res.json({ video: `data:video/mp4;base64,${base64}`, mime: "video/mp4" });
-  } catch (err) { res.status(500).json({ error: "Video Error" }); }
+  } catch (err) { res.status(500).json({ error: "Video model is loading, try again in 1 minute." }); }
 });
 
-// --- SYSTÈME D'EMAIL ---
+// --- SYSTÈME D'EMAIL & CONFIRMATION ---
 app.post("/send-confirmation", async (req, res) => {
   const { email, name } = req.body;
   const token = crypto.randomBytes(32).toString("hex");
   pendingTokens.set(token, { email: email.toLowerCase(), name, expires: Date.now() + 86400000 });
+  
   const transporter = createTransporter();
   const confirmLink = `${FRONTEND_URL}?confirm=${token}`;
-  if (!transporter) return res.json({ success: true, confirmLink });
+
+  if (!transporter) return res.json({ success: true, confirmLink, emailSent: false });
 
   try {
     await transporter.sendMail({
       from: `"Nova AI 618" <${process.env.GMAIL_USER}>`,
       to: email,
-      subject: "Confirmation",
-      html: `<h2>Welcome ${name}</h2><p>Click <a href="${confirmLink}">here</a> to confirm.</p>`
+      subject: "Activate your Nova AI account",
+      html: `<div style="background:#0b0c12; color:#fff; padding:30px; font-family:sans-serif; border-radius:15px;">
+              <h1 style="color:#7c6aff;">Nova AI 618</h1>
+              <p>Welcome <b>${name}</b>,</p>
+              <p>Click the button below to confirm your email and start using Nova.</p>
+              <a href="${confirmLink}" style="display:inline-block; padding:12px 25px; background:#7c6aff; color:#fff; text-decoration:none; border-radius:8px; font-weight:bold;">Confirm Account</a>
+              <p style="font-size:12px; color:#555; margin-top:20px;">This link will expire in 24 hours.</p>
+            </div>`
     });
-    res.json({ success: true });
-  } catch (err) { res.json({ success: true, confirmLink }); }
+    res.json({ success: true, emailSent: true });
+  } catch (err) { res.json({ success: true, confirmLink, emailSent: false }); }
 });
 
 app.get("/verify-email", (req, res) => {
@@ -205,4 +209,7 @@ app.get("/verify-email", (req, res) => {
   res.json({ success: true, email: data.email, name: data.name });
 });
 
-app.listen(PORT, () => console.log(`🚀 Nova AI 618 Backend Active on Port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`\n🚀 Nova AI 618 Backend Active`);
+  console.log(`Mode Image : OpenRouter Free (Auto-Switch)`);
+});
