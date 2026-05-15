@@ -15,13 +15,17 @@ const FRONTEND_URL = "https://sixteleinekugel-commits.github.io/novaAI-chat";
 const pendingTokens = new Map();
 
 // ─────────────────────────────────────────────────────────
-// OPENROUTER MODEL MAP
-// gpt-oss-120b = modèle principal gratuit sur OpenRouter
+// MODÈLE PRINCIPAL: google/gemma-4-31b-it:free
+//   - Supporte le chat, l'analyse d'images ET de vidéos
+//   - Gratuit via OpenRouter
+// MODEL_MAP: le frontend envoie l'id, on mappe vers OpenRouter
 // ─────────────────────────────────────────────────────────
+const DEFAULT_MODEL = "google/gemma-4-31b-it:free";
+
 const MODEL_MAP = {
-  "openai/gpt-oss-120b:free":     "openai/gpt-oss-120b:free",
-  "llama-3.3-70b-versatile": "meta-llama/llama-3.3-70b-instruct:free",
-  "llama-3.1-8b-instant":    "meta-llama/llama-3.1-8b-instruct:free"
+  "google/gemma-4-31b-it:free": "google/gemma-4-31b-it:free",
+  // gpt-oss-120b gardé comme fallback interne uniquement si besoin
+  "openai/gpt-oss-120b":        "openai/gpt-oss-120b"
 };
 
 function createTransporter() {
@@ -32,10 +36,16 @@ function createTransporter() {
   });
 }
 
+// ─────────────────────────────────────────────────────────
+// ROOT
+// ─────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.send("Nova AI 618 Backend — /chat /code /analyze /search /image /video /send-confirmation /verify-email /debug-env");
 });
 
+// ─────────────────────────────────────────────────────────
+// DEBUG ENV
+// ─────────────────────────────────────────────────────────
 app.get("/debug-env", (req, res) => {
   const or = process.env.OPENROUTER_API_KEY;
   res.json({
@@ -44,16 +54,16 @@ app.get("/debug-env", (req, res) => {
     GMAIL_USER:         process.env.GMAIL_USER ? `OK (${process.env.GMAIL_USER})` : "ABSENT",
     server_time:        new Date().toISOString(),
     models: {
-      chat:    "openai/gpt-oss-120b:free (4000 tokens)",
+      chat:    `${DEFAULT_MODEL} (4000 tokens)`,
       code:    "poolside/laguna-m.1:free (8000 tokens)",
-      analyze: "openai/gpt-oss-120b:free vision",
+      analyze: `${DEFAULT_MODEL} vision (images + video)`,
       video:   "HuggingFace damo-vilab/text-to-video-ms-1.7b (free, no key)"
     }
   });
 });
 
 // ─────────────────────────────────────────────────────────
-// /chat — gpt-oss-120b, 4000 tokens
+// /chat — Gemma 4 31B (google/gemma-4-31b-it:free), 4000 tokens
 // ─────────────────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages, model, temperature } = req.body;
@@ -64,13 +74,19 @@ app.post("/chat", async (req, res) => {
   if (!apiKey)
     return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
 
-  const selectedModel = MODEL_MAP[model] || "openai/gpt-oss-120b:free";
+  // Toujours utiliser Gemma par défaut, fallback gpt-oss-120b si explicitement demandé
+  const selectedModel = MODEL_MAP[model] || DEFAULT_MODEL;
 
   try {
-    console.log(`[/chat] ${model} → ${selectedModel}`);
+    console.log(`[/chat] model=${model} → ${selectedModel}`);
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
-      { model: selectedModel, messages, temperature: temperature ?? 0.7, max_tokens: 4000 },
+      {
+        model: selectedModel,
+        messages,
+        temperature: temperature ?? 0.7,
+        max_tokens: 4000
+      },
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -81,10 +97,13 @@ app.post("/chat", async (req, res) => {
         timeout: 40000
       }
     );
+
     const content = response.data?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Empty response");
+    if (!content) throw new Error("Empty response from OpenRouter");
+
     console.log(`[/chat] OK (${selectedModel})`);
     res.json(response.data);
+
   } catch (err) {
     const status = err.response?.status;
     const msg = err.response?.data?.error?.message || err.message;
@@ -109,7 +128,12 @@ app.post("/code", async (req, res) => {
     console.log("[/code] Laguna M.1...");
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
-      { model: "poolside/laguna-m.1:free", messages, temperature: 0.2, max_tokens: 8000 },
+      {
+        model: "poolside/laguna-m.1:free",
+        messages,
+        temperature: 0.2,
+        max_tokens: 8000
+      },
       {
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -120,10 +144,13 @@ app.post("/code", async (req, res) => {
         timeout: 90000
       }
     );
+
     const content = response.data?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Empty response");
+    if (!content) throw new Error("Empty response from Laguna M.1");
+
     console.log("[/code] OK");
     res.json(response.data);
+
   } catch (err) {
     const status = err.response?.status;
     const msg = err.response?.data?.error?.message || err.message;
@@ -134,30 +161,45 @@ app.post("/code", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /analyze — gpt-oss-120b vision
+// /analyze — Photo + Vidéo via Gemma 4 31B vision
+// Gemma 4 supporte les images ET les vidéos (multimodal)
 // ─────────────────────────────────────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
   if (!image) return res.status(400).json({ error: "image required" });
 
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
-  if (!apiKey) return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
+  if (!apiKey)
+    return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
 
   const prompt = question || "Analyze this image in detail. Describe what you see, key elements, colors, context, and anything relevant.";
 
+  // Détecter si c'est une vidéo ou une image via le data URL
+  const isVideo = image.startsWith("data:video/");
+  const isGif   = image.startsWith("data:image/gif");
+
+  let content;
+  if (isVideo) {
+    // Pour vidéo: Gemma 4 supporte video_url
+    content = [
+      { type: "video_url", video_url: { url: image } },
+      { type: "text",      text: question || "Analyze this video in detail. Describe what happens, key elements, motion, colors, context, and anything relevant." }
+    ];
+  } else {
+    // Pour image (jpeg, png, gif animé etc.)
+    content = [
+      { type: "image_url", image_url: { url: image, detail: "auto" } },
+      { type: "text",      text: prompt }
+    ];
+  }
+
   try {
-    console.log("[/analyze] gpt-oss-120b vision...");
+    console.log(`[/analyze] Gemma 4 31B vision — ${isVideo ? "VIDEO" : isGif ? "GIF" : "IMAGE"}...`);
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "openai/gpt-oss-120b:free",
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image_url", image_url: { url: image, detail: "auto" } },
-            { type: "text", text: prompt }
-          ]
-        }],
+        model: DEFAULT_MODEL,
+        messages: [{ role: "user", content }],
         max_tokens: 1500,
         temperature: 0.5
       },
@@ -168,17 +210,20 @@ app.post("/analyze", async (req, res) => {
           "HTTP-Referer": FRONTEND_URL,
           "X-Title": "Nova AI 618"
         },
-        timeout: 30000
+        timeout: 45000
       }
     );
+
     const reply = response.data?.choices?.[0]?.message?.content;
-    if (!reply) throw new Error("Empty response");
+    if (!reply) throw new Error("Empty response from vision model");
+
     console.log("[/analyze] OK");
     res.json({ choices: [{ message: { content: reply } }] });
+
   } catch (err) {
     const msg = err.response?.data?.error?.message || err.message;
     console.error(`[/analyze] ERROR: ${msg}`);
-    res.status(500).json({ error: "Photo analysis error: " + msg });
+    res.status(500).json({ error: "Analysis error: " + msg });
   }
 });
 
@@ -219,7 +264,7 @@ app.post("/image", async (req, res) => {
 
   try {
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&enhance=true&model=flux&seed=${Date.now()}`;
-    const buf = await fetchBinary(url, 200000);
+    const buf = await fetchBinary(url, 60000);
     res.json({ image: `data:image/jpeg;base64,${buf.toString("base64")}` });
   } catch (err) {
     res.status(500).json({ error: "Image generation failed: " + err.message });
@@ -227,18 +272,9 @@ app.post("/image", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /video — HuggingFace text-to-video (gratuit, sans clé API)
-//
-// PROBLÈME CORRIGÉ:
-//   L'ancienne approche utilisait https://video.pollinations.ai/prompt/...
-//   qui retourne une PAGE HTML (interface web), pas du binaire vidéo.
-//   Le modèle animatediff de Pollinations images n'est pas stable non plus.
-//
-// SOLUTION: HuggingFace Inference API
-//   POST https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b
-//   Body: { "inputs": "prompt text" }
-//   Retourne: bytes MP4 directement (responseType: arraybuffer)
-//   Gratuit sans clé, 503 si cold start → retry automatique
+// /video — HuggingFace text-to-video (gratuit, sans clé)
+// Modèle: damo-vilab/text-to-video-ms-1.7b
+// Retry automatique si 503 (cold start)
 // ─────────────────────────────────────────────────────────
 app.post("/video", async (req, res) => {
   const { prompt } = req.body;
@@ -266,16 +302,17 @@ app.post("/video", async (req, res) => {
       const buf = Buffer.from(response.data);
       if (buf.length < 1000) throw new Error(`Response too small (${buf.length}B)`);
 
-      // Détection MIME réelle par magic bytes
+      // Détection MIME par magic bytes
       let mime = "video/mp4";
       if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) mime = "image/gif";
       else if (buf[0] === 0xff && buf[1] === 0xd8) mime = "image/jpeg";
+      else if (buf[0] === 0x89 && buf[1] === 0x50) mime = "image/png";
 
-      console.log(`[/video] OK attempt ${attempt}: ${(buf.length/1024).toFixed(0)}KB, mime=${mime}`);
+      console.log(`[/video] OK attempt ${attempt}: ${(buf.length / 1024).toFixed(0)}KB, mime=${mime}`);
       return res.json({
-        video: `data:${mime};base64,${buf.toString("base64")}`,
+        video:   `data:${mime};base64,${buf.toString("base64")}`,
         mime,
-        isGif:  mime === "image/gif",
+        isGif:   mime === "image/gif",
         isVideo: mime === "video/mp4"
       });
 
@@ -284,15 +321,14 @@ app.post("/video", async (req, res) => {
       console.warn(`[/video] Attempt ${attempt} failed: HTTP ${status || "?"} — ${err.message}`);
 
       if (status === 503 && attempt < MAX_ATTEMPTS) {
-        // Modèle en cours de chargement sur HF → attendre et retry
+        // Modèle en cold start → attendre
         const wait = attempt * 15000;
-        console.log(`[/video] Model loading, waiting ${wait/1000}s...`);
+        console.log(`[/video] Model loading, waiting ${wait / 1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
-      if (status === 429) {
+      if (status === 429)
         return res.status(429).json({ error: "Video rate limit. Please wait a few minutes." });
-      }
       break;
     }
   }
@@ -310,7 +346,7 @@ function fetchBinary(url, timeoutMs) {
     const lib = url.startsWith("https") ? https : http;
     const timer = setTimeout(() => reject(new Error(`Timeout ${timeoutMs}ms`)), timeoutMs);
     const req = lib.get(url, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "*/*" } }, (res) => {
-      if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location) {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
         clearTimeout(timer);
         return fetchBinary(res.headers.location, timeoutMs).then(resolve).catch(reject);
       }
@@ -363,7 +399,7 @@ body{font-family:'Segoe UI',sans-serif;background:#050608;color:#ebebf2;margin:0
 <div class="expire">This link expires in <strong>24 hours</strong>.</div></div>
 <div class="foot">Nova AI 618 · Created by Sixte Leinekugel<br>Didn't sign up? Ignore this email.</div>
 </div></body></html>`,
-      text: `Hello ${name},\n\nActivate your Nova AI 618 account:\n${confirmLink}\n\nExpires in 24h.\n— Nova AI 618`
+      text: `Hello ${name},\n\nActivate: ${confirmLink}\n\nExpires in 24h.\n— Nova AI 618`
     });
     res.json({ success: true, confirmLink, emailSent: true });
   } catch (err) {
@@ -396,10 +432,10 @@ app.listen(PORT, () => {
   console.log(`   OPENROUTER_API_KEY : ${or ? "✅ OK " + or.slice(0,8) + "..." : "❌ ABSENT"}`);
   console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT"}`);
   console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER ? "✅ " + process.env.GMAIL_USER : "⚠️  ABSENT"}`);
-  console.log(`\n   /chat    → openai/gpt-oss-120b:free      (4 000 tokens)`);
-  console.log(`   /code    → poolside/laguna-m.1:free   (8 000 tokens)`);
-  console.log(`   /analyze → openai/gpt-oss-120b:free vision`);
-  console.log(`   /image   → Pollinations flux           (no key)`);
+  console.log(`\n   /chat    → google/gemma-4-31b-it:free  (4 000 tokens)`);
+  console.log(`   /code    → poolside/laguna-m.1:free    (8 000 tokens)`);
+  console.log(`   /analyze → google/gemma-4-31b-it:free  (vision: images + vidéos)`);
+  console.log(`   /image   → Pollinations flux            (no key)`);
   console.log(`   /video   → HuggingFace text-to-video   (no key, retry 503)`);
   console.log(`   /search  → Tavily\n`);
 });
