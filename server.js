@@ -15,16 +15,12 @@ const FRONTEND_URL = "https://sixteleinekugel-commits.github.io/novaAI-chat";
 const pendingTokens = new Map();
 
 // ─────────────────────────────────────────────────────────
-// MODÈLE PRINCIPAL: google/gemma-4-31b-it:free
-//   - Supporte le chat, l'analyse d'images ET de vidéos
-//   - Gratuit via OpenRouter
-// MODEL_MAP: le frontend envoie l'id, on mappe vers OpenRouter
+// MODÈLES OPENROUTER
 // ─────────────────────────────────────────────────────────
 const DEFAULT_MODEL = "google/gemma-4-31b-it:free";
 
 const MODEL_MAP = {
   "google/gemma-4-31b-it:free": "google/gemma-4-31b-it:free",
-  // gpt-oss-120b gardé comme fallback interne uniquement si besoin
   "openai/gpt-oss-120b":        "openai/gpt-oss-120b"
 };
 
@@ -37,15 +33,12 @@ function createTransporter() {
 }
 
 // ─────────────────────────────────────────────────────────
-// ROOT
+// ROOT & DEBUG
 // ─────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.send("Nova AI 618 Backend — /chat /code /analyze /search /image /video /send-confirmation /verify-email /debug-env");
 });
 
-// ─────────────────────────────────────────────────────────
-// DEBUG ENV
-// ─────────────────────────────────────────────────────────
 app.get("/debug-env", (req, res) => {
   const or = process.env.OPENROUTER_API_KEY;
   res.json({
@@ -63,7 +56,7 @@ app.get("/debug-env", (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /chat — Gemma 4 31B (google/gemma-4-31b-it:free), 4000 tokens
+// /chat — Gemma 4 31B
 // ─────────────────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages, model, temperature } = req.body;
@@ -74,7 +67,6 @@ app.post("/chat", async (req, res) => {
   if (!apiKey)
     return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
 
-  // Toujours utiliser Gemma par défaut, fallback gpt-oss-120b si explicitement demandé
   const selectedModel = MODEL_MAP[model] || DEFAULT_MODEL;
 
   try {
@@ -94,7 +86,7 @@ app.post("/chat", async (req, res) => {
           "HTTP-Referer": FRONTEND_URL,
           "X-Title": "Nova AI 618"
         },
-        timeout: 40000
+        timeout: 60000 // Timeout augmenté à 60s pour Render
       }
     );
 
@@ -114,7 +106,7 @@ app.post("/chat", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /code — Laguna M.1, 8000 tokens
+// /code — Laguna M.1
 // ─────────────────────────────────────────────────────────
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
@@ -141,7 +133,7 @@ app.post("/code", async (req, res) => {
           "HTTP-Referer": FRONTEND_URL,
           "X-Title": "Nova AI 618"
         },
-        timeout: 90000
+        timeout: 90000 // Le code peut être long à générer
       }
     );
 
@@ -161,8 +153,7 @@ app.post("/code", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /analyze — Photo + Vidéo via Gemma 4 31B vision
-// Gemma 4 supporte les images ET les vidéos (multimodal)
+// /analyze — Multimodal Vision via Gemma 4 31B
 // ─────────────────────────────────────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
@@ -174,19 +165,16 @@ app.post("/analyze", async (req, res) => {
 
   const prompt = question || "Analyze this image in detail. Describe what you see, key elements, colors, context, and anything relevant.";
 
-  // Détecter si c'est une vidéo ou une image via le data URL
   const isVideo = image.startsWith("data:video/");
   const isGif   = image.startsWith("data:image/gif");
 
   let content;
   if (isVideo) {
-    // Pour vidéo: Gemma 4 supporte video_url
     content = [
       { type: "video_url", video_url: { url: image } },
       { type: "text",      text: question || "Analyze this video in detail. Describe what happens, key elements, motion, colors, context, and anything relevant." }
     ];
   } else {
-    // Pour image (jpeg, png, gif animé etc.)
     content = [
       { type: "image_url", image_url: { url: image, detail: "auto" } },
       { type: "text",      text: prompt }
@@ -210,7 +198,7 @@ app.post("/analyze", async (req, res) => {
           "HTTP-Referer": FRONTEND_URL,
           "X-Title": "Nova AI 618"
         },
-        timeout: 45000
+        timeout: 60000 // Timeout augmenté pour l'upload d'images
       }
     );
 
@@ -256,7 +244,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /image — Pollinations flux (no key)
+// /image — Pollinations
 // ─────────────────────────────────────────────────────────
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
@@ -272,9 +260,7 @@ app.post("/image", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /video — HuggingFace text-to-video (gratuit, sans clé)
-// Modèle: damo-vilab/text-to-video-ms-1.7b
-// Retry automatique si 503 (cold start)
+// /video — HuggingFace text-to-video
 // ─────────────────────────────────────────────────────────
 app.post("/video", async (req, res) => {
   const { prompt } = req.body;
@@ -302,7 +288,6 @@ app.post("/video", async (req, res) => {
       const buf = Buffer.from(response.data);
       if (buf.length < 1000) throw new Error(`Response too small (${buf.length}B)`);
 
-      // Détection MIME par magic bytes
       let mime = "video/mp4";
       if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) mime = "image/gif";
       else if (buf[0] === 0xff && buf[1] === 0xd8) mime = "image/jpeg";
@@ -321,7 +306,6 @@ app.post("/video", async (req, res) => {
       console.warn(`[/video] Attempt ${attempt} failed: HTTP ${status || "?"} — ${err.message}`);
 
       if (status === 503 && attempt < MAX_ATTEMPTS) {
-        // Modèle en cold start → attendre
         const wait = attempt * 15000;
         console.log(`[/video] Model loading, waiting ${wait / 1000}s...`);
         await new Promise(r => setTimeout(r, wait));
@@ -339,7 +323,7 @@ app.post("/video", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// fetchBinary helper (avec redirect)
+// fetchBinary helper
 // ─────────────────────────────────────────────────────────
 function fetchBinary(url, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -361,7 +345,7 @@ function fetchBinary(url, timeoutMs) {
 }
 
 // ─────────────────────────────────────────────────────────
-// /send-confirmation
+// /send-confirmation & /verify-email
 // ─────────────────────────────────────────────────────────
 app.post("/send-confirmation", async (req, res) => {
   const { email, name } = req.body;
@@ -407,9 +391,6 @@ body{font-family:'Segoe UI',sans-serif;background:#050608;color:#ebebf2;margin:0
   }
 });
 
-// ─────────────────────────────────────────────────────────
-// /verify-email
-// ─────────────────────────────────────────────────────────
 app.get("/verify-email", (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).json({ success: false, error: "No token" });
@@ -432,10 +413,10 @@ app.listen(PORT, () => {
   console.log(`   OPENROUTER_API_KEY : ${or ? "✅ OK " + or.slice(0,8) + "..." : "❌ ABSENT"}`);
   console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT"}`);
   console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER ? "✅ " + process.env.GMAIL_USER : "⚠️  ABSENT"}`);
-  console.log(`\n   /chat    → google/gemma-4-31b-it:free  (4 000 tokens)`);
+  console.log(`\n   /chat    → ${DEFAULT_MODEL}  (4 000 tokens)`);
   console.log(`   /code    → poolside/laguna-m.1:free    (8 000 tokens)`);
-  console.log(`   /analyze → google/gemma-4-31b-it:free  (vision: images + vidéos)`);
-  console.log(`   /image   → Pollinations flux            (no key)`);
+  console.log(`   /analyze → ${DEFAULT_MODEL}  (vision: images + vidéos)`);
+  console.log(`   /image   → Pollinations flux           (no key)`);
   console.log(`   /video   → HuggingFace text-to-video   (no key, retry 503)`);
   console.log(`   /search  → Tavily\n`);
 });
