@@ -10,17 +10,24 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
+// ─────────────────────────────────────────────────────────
+// CONFIGURATION
+// ─────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 10000;
-const FRONTEND_URL = "https://sixteleinekugel-commits.github.io/novaAI-chat";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://sixteleinekugel-commits.github.io/novaAI-chat";
 const pendingTokens = new Map();
 
-// ─────────────────────────────────────────────────────────
-// CONFIGURATION DES MODÈLES
-// ─────────────────────────────────────────────────────────
-const DEFAULT_MODEL = "google/gemma-4-31b-it:free";
+// Modèles optimisés pour éviter les rate limits
+const TEXT_MODEL = "meta-llama/llama-3.1-70b-instruct:free"; // Modèle par défaut pour le texte (moins saturé)
+const VISION_MODEL = "google/gemma-4-31b-it:free"; // Modèle pour les images (Gemma 4 supporte la vision)
+const CODE_MODEL = "poolside/laguna-m.1:free"; // Modèle pour le code
+
+// Mappage des modèles (pour compatibilité avec le frontend)
 const MODEL_MAP = {
+  "google/gemma-4-31b-it:free": VISION_MODEL, // Force l'utilisation de VISION_MODEL si demandé
   "openai/gpt-oss-120b": "openai/gpt-oss-120b",
-  // Gemma 4 est le modèle par défaut, pas besoin de le mapper
+  "meta-llama/llama-3.1-70b-instruct:free": TEXT_MODEL,
+  "poolside/laguna-m.1:free": CODE_MODEL,
 };
 
 // ─────────────────────────────────────────────────────────
@@ -54,6 +61,67 @@ function fetchBinary(url, timeoutMs) {
 }
 
 // ─────────────────────────────────────────────────────────
+// FONCTION POUR APPPELER OPENROUTER AVEC FALLBACK
+// ─────────────────────────────────────────────────────────
+async function callOpenRouter(modelsToTry, messages, options = {}) {
+  const { temperature = 0.7, max_tokens = 2000, timeout = 60000 } = options;
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY not configured");
+
+  let lastError = null;
+
+  for (const model of modelsToTry) {
+    try {
+      console.log(`[OpenRouter] Trying model: ${model}...`);
+      const response = await axios.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          model,
+          messages,
+          temperature,
+          max_tokens,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": FRONTEND_URL,
+            "X-Title": "Nova AI 618"
+          },
+          timeout
+        }
+      );
+
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (!content) throw new Error("Empty response from OpenRouter");
+
+      console.log(`[OpenRouter] Success with model: ${model}`);
+      return { ...response.data, model_used: model };
+
+    } catch (err) {
+      const status = err.response?.status;
+      lastError = err;
+      console.error(`[OpenRouter] Model ${model} failed: ${status || "?"} - ${err.message}`);
+
+      // Si rate limit (429), attendre 15s avant de réessayer
+      if (status === 429) {
+        console.log(`[OpenRouter] Rate limited for ${model}, waiting 15s...`);
+        await new Promise(resolve => setTimeout(resolve, 15000));
+        continue;
+      }
+      // Si modèle indisponible (404 ou 400), essayer le suivant
+      if (status === 404 || status === 400) {
+        continue;
+      }
+      // Pour les autres erreurs, abandonner
+      break;
+    }
+  }
+
+  throw lastError || new Error("All models failed");
+}
+
+// ─────────────────────────────────────────────────────────
 // ROUTES
 // ─────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
@@ -63,14 +131,15 @@ app.get("/", (req, res) => {
 app.get("/debug-env", (req, res) => {
   const or = process.env.OPENROUTER_API_KEY;
   res.json({
-    OPENROUTER_API_KEY: or ? `OK (${or.slice(0,8)}...) len=${or.length}` : "ABSENT — REQUIRED",
+    OPENROUTER_API_KEY: or ? `OK (${or.slice(0, 8)}...)` : "ABSENT — REQUIRED",
     TAVILY_API_KEY: process.env.TAVILY_API_KEY ? "OK" : "ABSENT",
     GMAIL_USER: process.env.GMAIL_USER ? `OK (${process.env.GMAIL_USER})` : "ABSENT",
+    FRONTEND_URL: FRONTEND_URL,
     server_time: new Date().toISOString(),
     models: {
-      chat: `${DEFAULT_MODEL} (max_tokens: 2000)`,
-      code: "poolside/laguna-m.1:free (max_tokens: 8000)",
-      analyze: `${DEFAULT_MODEL} (vision: images only, max_tokens: 2000)`,
+      chat: `${TEXT_MODEL} (max_tokens: 2000)`,
+      code: `${CODE_MODEL} (max_tokens: 8000)`,
+      analyze: `${VISION_MODEL} (vision: images only, max_tokens: 2000)`,
       video: "HuggingFace damo-vilab/text-to-video-ms-1.7b (free, no key)",
       image: "Pollinations flux (no key)"
     }
@@ -78,7 +147,7 @@ app.get("/debug-env", (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /chat — Gemma 4 31B (texte uniquement)
+// /chat — Texte uniquement (avec fallback)
 // ─────────────────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages, model, temperature } = req.body;
@@ -86,48 +155,29 @@ app.post("/chat", async (req, res) => {
     return res.status(400).json({ error: "messages array required" });
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
-  if (!apiKey) {
-    return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
-  }
+  // Limite à 10 messages pour éviter les requêtes trop lourdes
+  const limitedMessages = messages.slice(-10);
+  console.log(`[/chat] Messages: ${messages.length} → limited to ${limitedMessages.length}`);
 
-  const selectedModel = MODEL_MAP[model] || DEFAULT_MODEL;
-  console.log(`[/chat] model=${model} → ${selectedModel}, messages count=${messages.length}`);
+  // Modèles à essayer (par ordre de préférence)
+  const modelsToTry = [
+    MODEL_MAP[model] || TEXT_MODEL, // Modèle demandé ou TEXT_MODEL par défaut
+    "openai/gpt-oss-120b", // Fallback 1
+    "mistralai/mistral-7b-instruct:free" // Fallback 2
+  ];
 
   try {
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: selectedModel,
-        messages,
-        temperature: temperature ?? 0.7,
-        max_tokens: 2000 // Réduit pour éviter les erreurs
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": FRONTEND_URL,
-          "X-Title": "Nova AI 618"
-        },
-        timeout: 60000 // 60s pour les modèles lourds
-      }
+    const result = await callOpenRouter(
+      modelsToTry,
+      limitedMessages,
+      { temperature: temperature ?? 0.7, max_tokens: 2000, timeout: 60000 }
     );
-
-    const content = response.data?.choices?.[0]?.message?.content;
-    if (!content) {
-      console.error("[/chat] Empty response:", response.data);
-      throw new Error("Empty response from OpenRouter");
-    }
-
-    console.log(`[/chat] OK (${selectedModel})`);
-    res.json(response.data);
-
+    res.json(result);
   } catch (err) {
     const status = err.response?.status;
     const msg = err.response?.data?.error?.message || err.message;
-    console.error(`[/chat] ERROR ${status || "?"}: ${msg}`);
-    if (status === 429) return res.status(429).json({ rate_limited: true });
+    console.error(`[/chat] ERROR: ${msg}`);
+    if (status === 429) return res.status(429).json({ rate_limited: true, error: "Rate limit exceeded. Trying again..." });
     res.status(500).json({ error: "Chat error: " + msg });
   }
 });
@@ -149,7 +199,7 @@ app.post("/code", async (req, res) => {
     const response = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "poolside/laguna-m.1:free",
+        model: CODE_MODEL,
         messages,
         temperature: 0.2,
         max_tokens: 8000
@@ -181,7 +231,7 @@ app.post("/code", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /analyze — Image ONLY (Gemma 4 supporte les images, PAS les vidéos via OpenRouter)
+// /analyze — Images ONLY (Gemma 4 supporte la vision)
 // ─────────────────────────────────────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
@@ -200,33 +250,20 @@ app.post("/analyze", async (req, res) => {
     { type: "image_url", image_url: { url: image, detail: "auto" } }
   ];
 
+  // Modèles à essayer pour la vision (Gemma 4 en premier)
+  const modelsToTry = [
+    VISION_MODEL,
+    "meta-llama/llama-3.1-70b-instruct:free" // Fallback (mais moins bon pour la vision)
+  ];
+
   try {
-    console.log("[/analyze] Sending image to Gemma 4...");
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: DEFAULT_MODEL,
-        messages: [{ role: "user", content }],
-        max_tokens: 2000,
-        temperature: 0.5
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": FRONTEND_URL,
-          "X-Title": "Nova AI 618"
-        },
-        timeout: 60000
-      }
+    console.log("[/analyze] Sending image to vision model...");
+    const result = await callOpenRouter(
+      modelsToTry,
+      [{ role: "user", content }],
+      { temperature: 0.5, max_tokens: 2000, timeout: 60000 }
     );
-
-    const reply = response.data?.choices?.[0]?.message?.content;
-    if (!reply) throw new Error("Empty response from vision model");
-
-    console.log("[/analyze] OK");
-    res.json({ choices: [{ message: { content: reply } }] });
-
+    res.json(result);
   } catch (err) {
     const msg = err.response?.data?.error?.message || err.message;
     console.error(`[/analyze] ERROR: ${msg}`);
@@ -418,12 +455,13 @@ app.get("/verify-email", (req, res) => {
 app.listen(PORT, () => {
   const or = process.env.OPENROUTER_API_KEY;
   console.log(`\n🚀 Nova AI 618 Backend — port ${PORT}`);
-  console.log(`   OPENROUTER_API_KEY : ${or ? "✅ OK " + or.slice(0,8) + "..." : "❌ ABSENT"}`);
-  console.log(`   TAVILY_API_KEY     : ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT"}`);
-  console.log(`   GMAIL_USER         : ${process.env.GMAIL_USER ? "✅ " + process.env.GMAIL_USER : "⚠️  ABSENT"}`);
-  console.log(`\n   /chat    → ${DEFAULT_MODEL} (max_tokens: 2000, timeout: 60s)`);
-  console.log(`   /code    → poolside/laguna-m.1:free (max_tokens: 8000)`);
-  console.log(`   /analyze → ${DEFAULT_MODEL} (vision: images ONLY, max_tokens: 2000)`);
+  console.log(`   FRONTEND_URL: ${FRONTEND_URL}`);
+  console.log(`   OPENROUTER_API_KEY: ${or ? "✅ OK (" + or.slice(0, 8) + "...)" : "❌ ABSENT"}`);
+  console.log(`   TAVILY_API_KEY: ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT"}`);
+  console.log(`   GMAIL_USER: ${process.env.GMAIL_USER ? "✅ " + process.env.GMAIL_USER : "⚠️  ABSENT"}`);
+  console.log(`\n   /chat    → ${TEXT_MODEL} (texte, max_tokens: 2000, fallback: gpt-oss-120b)`);
+  console.log(`   /code    → ${CODE_MODEL} (8000 tokens)`);
+  console.log(`   /analyze → ${VISION_MODEL} (vision: images ONLY, max_tokens: 2000)`);
   console.log(`   /image   → Pollinations flux (no key)`);
   console.log(`   /video   → HuggingFace text-to-video (no key, retry 503)`);
   console.log(`   /search  → Tavily\n`);
