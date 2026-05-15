@@ -17,16 +17,17 @@ const PORT = process.env.PORT || 10000;
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://sixteleinekugel-commits.github.io/novaAI-chat";
 const pendingTokens = new Map();
 
-// Modèles optimisés pour éviter les rate limits
-const TEXT_MODEL = "meta-llama/llama-3.1-70b-instruct:free"; // Modèle par défaut pour le texte (moins saturé)
+// Modèles optimisés (tous en version FREE)
+const TEXT_MODEL = "openai/gpt-oss-120b:free"; // Modèle par défaut pour le texte
 const VISION_MODEL = "google/gemma-4-31b-it:free"; // Modèle pour les images (Gemma 4 supporte la vision)
 const CODE_MODEL = "poolside/laguna-m.1:free"; // Modèle pour le code
 
 // Mappage des modèles (pour compatibilité avec le frontend)
 const MODEL_MAP = {
-  "google/gemma-4-31b-it:free": VISION_MODEL, // Force l'utilisation de VISION_MODEL si demandé
-  "openai/gpt-oss-120b": "openai/gpt-oss-120b",
-  "meta-llama/llama-3.1-70b-instruct:free": TEXT_MODEL,
+  "google/gemma-4-31b-it:free": VISION_MODEL,
+  "openai/gpt-oss-120b": TEXT_MODEL, // Redirige vers la version free
+  "openai/gpt-oss-120b:free": TEXT_MODEL,
+  "meta-llama/llama-3.1-70b-instruct:free": "meta-llama/llama-3.1-70b-instruct:free",
   "poolside/laguna-m.1:free": CODE_MODEL,
 };
 
@@ -139,7 +140,7 @@ app.get("/debug-env", (req, res) => {
     models: {
       chat: `${TEXT_MODEL} (max_tokens: 2000)`,
       code: `${CODE_MODEL} (max_tokens: 8000)`,
-      analyze: `${VISION_MODEL} (vision: images only, max_tokens: 2000)`,
+      analyze: `${VISION_MODEL} (vision: images ONLY, max_tokens: 2000)`,
       video: "HuggingFace damo-vilab/text-to-video-ms-1.7b (free, no key)",
       image: "Pollinations flux (no key)"
     }
@@ -147,7 +148,7 @@ app.get("/debug-env", (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /chat — Texte uniquement (avec fallback)
+// /chat — Texte uniquement (avec fallback sur d'autres modèles FREE)
 // ─────────────────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
   const { messages, model, temperature } = req.body;
@@ -159,10 +160,10 @@ app.post("/chat", async (req, res) => {
   const limitedMessages = messages.slice(-10);
   console.log(`[/chat] Messages: ${messages.length} → limited to ${limitedMessages.length}`);
 
-  // Modèles à essayer (par ordre de préférence)
+  // Modèles à essayer (par ordre de préférence, tous en FREE)
   const modelsToTry = [
-    MODEL_MAP[model] || TEXT_MODEL, // Modèle demandé ou TEXT_MODEL par défaut
-    "openai/gpt-oss-120b", // Fallback 1
+    MODEL_MAP[model] || TEXT_MODEL, // Modèle demandé ou TEXT_MODEL par défaut (gpt-oss-120b:free)
+    "meta-llama/llama-3.1-70b-instruct:free", // Fallback 1
     "mistralai/mistral-7b-instruct:free" // Fallback 2
   ];
 
@@ -183,7 +184,7 @@ app.post("/chat", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /code — Laguna M.1 (8000 tokens)
+// /code — Laguna M.1 (8000 tokens, FREE)
 // ─────────────────────────────────────────────────────────
 app.post("/code", async (req, res) => {
   const { messages } = req.body;
@@ -231,7 +232,7 @@ app.post("/code", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /analyze — Images ONLY (Gemma 4 supporte la vision)
+// /analyze — Images ONLY (Gemma 4 supporte la vision, FREE)
 // ─────────────────────────────────────────────────────────
 app.post("/analyze", async (req, res) => {
   const { image, question } = req.body;
@@ -253,7 +254,7 @@ app.post("/analyze", async (req, res) => {
   // Modèles à essayer pour la vision (Gemma 4 en premier)
   const modelsToTry = [
     VISION_MODEL,
-    "meta-llama/llama-3.1-70b-instruct:free" // Fallback (mais moins bon pour la vision)
+    "meta-llama/llama-3.1-70b-instruct:free" // Fallback (moins bon pour la vision)
   ];
 
   try {
@@ -307,7 +308,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /image — Pollinations (Flux)
+// /image — Pollinations (Flux, FREE)
 // ─────────────────────────────────────────────────────────
 app.post("/image", async (req, res) => {
   const { prompt } = req.body;
@@ -323,7 +324,7 @@ app.post("/image", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// /video — HuggingFace (text-to-video)
+// /video — HuggingFace (text-to-video, FREE)
 // ─────────────────────────────────────────────────────────
 app.post("/video", async (req, res) => {
   const { prompt } = req.body;
@@ -459,7 +460,7 @@ app.listen(PORT, () => {
   console.log(`   OPENROUTER_API_KEY: ${or ? "✅ OK (" + or.slice(0, 8) + "...)" : "❌ ABSENT"}`);
   console.log(`   TAVILY_API_KEY: ${process.env.TAVILY_API_KEY ? "✅ OK" : "❌ ABSENT"}`);
   console.log(`   GMAIL_USER: ${process.env.GMAIL_USER ? "✅ " + process.env.GMAIL_USER : "⚠️  ABSENT"}`);
-  console.log(`\n   /chat    → ${TEXT_MODEL} (texte, max_tokens: 2000, fallback: gpt-oss-120b)`);
+  console.log(`\n   /chat    → ${TEXT_MODEL} (texte, max_tokens: 2000, fallback: llama-3.1-70b → mistral-7b)`);
   console.log(`   /code    → ${CODE_MODEL} (8000 tokens)`);
   console.log(`   /analyze → ${VISION_MODEL} (vision: images ONLY, max_tokens: 2000)`);
   console.log(`   /image   → Pollinations flux (no key)`);
